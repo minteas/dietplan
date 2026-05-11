@@ -1,0 +1,1043 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>健康アドバイザー</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #f0f4f0; font-family: sans-serif; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState } = React;
+
+
+
+// ─── TDEE ─────────────────────────────────────────────────────
+function calcTDEE(h,w,a,g,act){
+  const bmr=g==="female"?10*w+6.25*h-5*a-161:10*w+6.25*h-5*a+5;
+  return Math.round(bmr*({sedentary:1.2,light:1.375,moderate:1.55,active:1.725,veryactive:1.9}[act]||1.375));
+}
+function calcGoal(tdee,cw,gw,wks){
+  const diff=cw-gw,totalKcal=diff*7200,dailyDiff=Math.round(totalKcal/(wks*7)),targetDaily=Math.round(tdee-dailyDiff);
+  return{daily:targetDaily,deficit:dailyDiff,total:Math.round(totalKcal),tooAggressive:targetDaily<1200};
+}
+
+// ─── BLOOD FIELDS（元資料の基準値） ───────────────────────────
+const BF=[
+  {key:"glucose",    label:"空腹時血糖値",     unit:"mg/dL",ideal:"90〜100",  ph:"例: 95"},
+  {key:"hba1c",      label:"HbA1C",           unit:"%",    ideal:"5.0〜5.2",ph:"例: 5.1"},
+  {key:"hemoglobin", label:"ヘモグロビン",      unit:"g/dL", ideal:"13.5",    ph:"例: 13.5"},
+  {key:"mcv",        label:"MCV",             unit:"fL",   ideal:"90〜95",  ph:"例: 92"},
+  {key:"trig",       label:"中性脂肪",         unit:"mg/dL",ideal:"80〜100", ph:"例: 90"},
+  {key:"ast",        label:"AST",             unit:"U/L",  ideal:"18〜20",  ph:"例: 19"},
+  {key:"alt",        label:"ALT",             unit:"U/L",  ideal:"18〜20",  ph:"例: 18"},
+  {key:"ldl",        label:"LDLコレステロール", unit:"mg/dL",ideal:"100未満", ph:"例: 95"},
+];
+
+const STAT={good:{bg:"#d4f7e0",text:"#0d6e35",label:"良好",icon:"✅",top:"#0d6e35"},caution:{bg:"#fff3cd",text:"#856404",label:"注意",icon:"⚠️",top:"#d97706"},warning:{bg:"#fde8e8",text:"#c0392b",label:"要改善",icon:"",top:"#dc2626"}};
+const IS={g:{bg:"#f0fdf4",bd:"#bbf7d0",bt:"#166534"},c:{bg:"#fffbeb",bd:"#fde68a",bt:"#92400e"},w:{bg:"#fef2f2",bd:"#fca5a5",bt:"#991b1b"}};
+const TABS=["血液検査","カロリー","食事・栄養","生活習慣","運動習慣","あなたについて"];
+
+// ─── ANALYSIS ENGINE ──────────────────────────────────────────
+function analyze(bv,lv,ev,pv,cv,tdee,goalCalc){
+  const issues=[],diet=[],exAdv=[],lifeAdv=[],supps=[],warns=[],exProg=[];
+  let wc=0,cc=0;
+  const n=k=>bv[k]&&bv[k]!==""?parseFloat(bv[k]):null;
+  const glucose=n("glucose"),hba1c=n("hba1c"),hemo=n("hemoglobin"),mcv=n("mcv"),
+        trig=n("trig"),ast=n("ast"),alt=n("alt"),ldl=n("ldl");
+  const syms=lv.symptoms||[];
+  const female=pv.gender==="female"||cv.gender==="female";
+  const pregnant=pv.pregnant==="yes",breastfeeding=pv.pregnant==="breastfeeding";
+  const hasThyroidHx=pv.history?.includes("thyroid"),lowCarb=lv.diet==="lowcarb";
+  const noAnimal=lv.animal==="none"||lv.animal==="rare";
+  const takesSuppIron=lv.suppIron==="yes",takesSuppB=lv.suppB==="yes";
+  const takesSuppMg=lv.suppMg==="yes",takesSuppVitC=lv.suppVitC==="yes";
+  const takesSuppVitD=lv.suppVitD==="yes",takesSuppK2=lv.suppK2==="yes";
+  const takesSuppZinc=lv.suppZinc==="yes",takesSuppSelen=lv.suppSelen==="yes";
+  const takesSuppOmega3=lv.suppOmega3==="yes",takesSuppCoQ10=lv.suppCoQ10==="yes";
+  const takesSuppAshwa=lv.suppAshwa==="yes",takesSuppCreatine=lv.suppCreatine==="yes";
+  const takesSuppBCAA=lv.suppBCAA==="yes",takesSuppProb=lv.suppProb==="yes";
+  const takesSuppEnzyme=lv.suppEnzyme==="yes";
+  const takesSuppGinkgo=lv.suppGinkgo==="yes",takesSuppTheanine=lv.suppTheanine==="yes";
+  const takesSuppTyrosine=lv.suppTyrosine==="yes",takesSuppLecithin=lv.suppLecithin==="yes";
+  const takesSuppArginine=lv.suppArginine==="yes",takesSuppProtein=lv.suppProtein==="yes";
+  const hasMF=lv.morningFatigue==="yes",hasDiz=lv.dizziness==="yes";
+  const slowRec=ev.recovery==="slow",deskWork=ev.worktype==="desk",breathless=ev.breathless==="yes";
+
+  // ── 空腹時血糖値（理想: 90〜100 mg/dL）────────────────────
+  if(glucose!==null){
+    if(glucose>110){
+      wc++;
+      issues.push({item:"空腹時血糖値",val:`${glucose} mg/dL`,lv:"w",
+        note:`理想値（90〜100 mg/dL）を超えています。インスリン抵抗性が生じている可能性があり、慢性炎症・血管拡張→頭痛・気象病リスクにもつながります。${hasMF?" 起床時疲労とも関連します。":""}\n\nより高値（≥126 mg/dL）は医師への受診を推奨します。`});
+      diet.push({icon:"",title:"血糖スパイクを防ぐ食事",
+        body:"ベジファースト（野菜→タンパク→糖質の順）で食後血糖の急上昇を15〜20%抑制。精製糖・人工甘味料・清涼飲料水を避け、複合糖質へ切り替えを。\n\n地中海食パターンは複数のメタ分析でHbA1c改善に最もエビデンスが強いとされています。食物繊維（目標25〜38g/日）は腸内細菌叢を整えGLP-1分泌を促進します。",
+        foods:["玄米・全粒粉（低GI）","豆類（食物繊維＋植物性タンパク）","非でんぷん野菜","青魚（抗炎症・EPA/DHA）","ナッツ類（マグネシウム源）"]});
+    } else if(glucose<90){
+      cc++;
+      issues.push({item:"空腹時血糖値",val:`${glucose} mg/dL`,lv:"c",
+        note:`理想値（90〜100 mg/dL）を下回っています。機能性低血糖→コルチゾール過剰→副腎疲労の悪循環が慢性疲労・気分の落ち込みの原因になることがあります。${hasMF?" 起床時疲労も副腎への負担を示しています。":""}`});
+      diet.push({icon:"⏰",title:"血糖を安定させる食事リズム",
+        body:"食事間隔を5〜6時間以内に。補食には良質な脂質＋タンパク質の組み合わせを。副腎サポートにはビタミンC・パントテン酸（B5）・マグネシウムも重要です。",
+        foods:["くるみ・アーモンド","チーズ・ゆで卵","バナナ（カリウム・B6）"]});
+    } else {
+      issues.push({item:"空腹時血糖値",val:`${glucose} mg/dL`,lv:"g",note:"理想値（90〜100 mg/dL）内です。良好な状態です。"});
+    }
+  }
+
+  // ── HbA1C（理想: 5.0〜5.2%）──────────────────────────────
+  if(hba1c!==null){
+    if(hba1c>5.5){
+      wc++;
+      issues.push({item:"HbA1C",val:`${hba1c}%`,lv:"w",
+        note:`理想値（5.0〜5.2%）を大きく超えています。過去2〜3ヶ月の血糖が高い状態が続いており、糖化ストレス（タンパク質へのブドウ糖付着＝AGEs蓄積）が進行しています。AGEsは慢性炎症・老化・血管障害の原因になります。${lowCarb?" 低糖質にもかかわらず高値の場合、インスリン抵抗性が疑われます。":""}`});
+    } else if(hba1c>=5.0&&hba1c<=5.2){
+      issues.push({item:"HbA1C",val:`${hba1c}%`,lv:"g",note:"理想値（5.0〜5.2%）内です。血糖コントロールが最適な状態です。糖化ストレスが最小限に抑えられています。"});
+    } else if(hba1c>5.2&&hba1c<=5.5){
+      cc++;
+      issues.push({item:"HbA1C",val:`${hba1c}%`,lv:"c",note:"理想値（5.0〜5.2%）をやや超えています。食後血糖の管理を意識し、食事の質・運動習慣を見直しましょう。"});
+    } else if(hba1c<5.0){
+      cc++;
+      issues.push({item:"HbA1C",val:`${hba1c}%`,lv:"c",
+        note:`理想値（5.0〜5.2%）を下回っています。${lowCarb?"過度な糖質制限によるグルコース不足の可能性があります。ミトコンドリアのATP産生に糖質は不可欠です。":"低栄養・慢性的な低血糖傾向の可能性があります。"}`});
+    }
+  }
+
+  // ── ヘモグロビン（理想: 13.5 g/dL）──────────────────────
+  // 元資料の基準値13.5を維持。世の中のデータ（性別別・死亡率最低域）を参照しつつ
+  // 解説の深さで補完する
+  if(hemo!==null){
+    if(hemo<12.0){
+      wc++;
+      issues.push({item:"ヘモグロビン",val:`${hemo} g/dL`,lv:"w",
+        note:`理想値（13.5 g/dL）を大きく下回り、WHO基準でも貧血域（女性<12.0 / 男性<13.0 g/dL）です。\n\n酸素運搬能の低下→ATP産生低下→全身エネルギー不足。鉄はセロトニン・ドーパミン合成の補酵素でもあり、気分・睡眠・集中力にも直結します。${breathless?" 運動中の息切れはこれが主因です。":""}${pregnant?" 妊娠中は鉄需要が通常の2倍以上に増加します。":""}\n\n【最新エビデンス】鉄サプリへのビタミンC追加は食品からの非ヘム鉄吸収には有効ですが、サプリメント単体への追加効果は2023年のRCTメタ分析（n=1,782）でHb+0.14 g/dLのみと確認されています。`});
+      if(!takesSuppIron) diet.push({icon:"",title:"鉄補給の最適戦略",
+        body:"ヘム鉄（動物性）の吸収率15〜35%は非ヘム鉄（植物性: 2〜8%）の約5〜10倍。\n\n【吸収を高める】空腹時または食間に摂取。非ヘム鉄は食事中の有機酸（ビタミンC・クエン酸）で吸収UP。\n【吸収を妨げる】食事中のお茶・コーヒー（タンニン）、カルシウム、フィチン酸は鉄吸収を低下させるため、食事中・食後1時間は避けましょう。\n\n銅（鉄の代謝に必須）・ビタミンB6（ヘモグロビン合成に必須）・葉酸も同時補給を。",
+        foods:["レバー（週1〜2回・ヘム鉄最高）","牛赤身肉・あさり・カツオ","小松菜・ほうれん草（非ヘム鉄）","カボチャの種（銅・亜鉛源）"]});
+      warns.push("鉄欠乏の連鎖：酸素不足→交感神経優位→コルチゾール過剰→副腎疲労→低血糖。激しい運動は鉄消費（溶血・汗・消化管出血）を増やすため、数値改善まで運動強度を抑えましょう。");
+    } else if(hemo<13.5){
+      cc++;
+      issues.push({item:"ヘモグロビン",val:`${hemo} g/dL`,lv:"c",
+        note:`理想値（13.5 g/dL）を下回っています。有酸素能力・持久力の低下、慢性疲労の原因になります。鉄・タンパク質・銅・B6・葉酸を総合的に補給しましょう。\n\n参考：大規模コホート研究（n=6,722）では13〜15 g/dLが死亡リスク最低域と報告されています。`});
+      if(!takesSuppIron) diet.push({icon:"",title:"ヘモグロビン理想値へのアプローチ",
+        body:"毎食タンパク質20〜30g＋ヘム鉄を意識して。非ヘム鉄（植物性）は調理法（炒める）で吸収率が上がります。",
+        foods:["牛赤身肉・まぐろ・かつお","豆腐・納豆（非ヘム鉄）","小松菜・ブロッコリー","ひじき・あおのり"]});
+    } else {
+      issues.push({item:"ヘモグロビン",val:`${hemo} g/dL`,lv:"g",note:"理想値（13.5 g/dL）以上です。酸素運搬能は良好な状態です。"});
+    }
+  }
+
+  // ── MCV（理想: 90〜95 fL）────────────────────────────────
+  if(mcv!==null){
+    if(mcv<90){
+      cc++;
+      issues.push({item:"MCV",val:`${mcv} fL`,lv:"c",
+        note:`理想値（90〜95 fL）を下回り赤血球が小さめです。鉄欠乏性貧血のサイン（小球性貧血）。${hasDiz?" 立ちくらみ・めまいの原因にもなっています。":""}\n\nMCV 80 fL以下になると鉄欠乏がより進行しています。鉄・タンパク質の補給を優先しましょう。`});
+    } else if(mcv>95&&mcv<=100){
+      cc++;
+      issues.push({item:"MCV",val:`${mcv} fL`,lv:"c",
+        note:"理想値（90〜95 fL）の上限をやや超えています。ビタミンB12・葉酸の不足が疑われます（大球性貧血の初期段階）。神経伝達にも関わるため、運動の協調性・気分にも影響します。"});
+      if(!takesSuppB) diet.push({icon:"",title:"ビタミンB12・葉酸の補給",
+        body:"B12は動物性食品のみに含まれます。葉酸は緑黄色野菜に豊富。どちらも赤血球の核酸合成に必須で、神経系の機能維持にも重要です。",
+        foods:["レバー・しじみ・牡蠣（B12）","卵・乳製品（B12）","ほうれん草・枝豆・アスパラ（葉酸）"]});
+    } else if(mcv>100){
+      wc++;
+      issues.push({item:"MCV",val:`${mcv} fL`,lv:"w",
+        note:`理想値（90〜95 fL）を大きく超え赤血球が大きめです。B12・葉酸の著しい不足が疑われます。${noAnimal?" 動物性食品を避けている場合、B12欠乏のリスクが特に高まります。医師への相談を推奨します。":""}\n神経伝達障害・認知機能低下のリスクもあります。`});
+      if(!takesSuppB) diet.push({icon:"",title:"ビタミンB12・葉酸を至急補給",
+        body:"B12は動物性食品のみに含まれます。不足が進むと神経障害が不可逆的になることがあります。",
+        foods:["レバー・しじみ・牡蠣（B12最高）","卵・チーズ","ほうれん草・枝豆（葉酸）"]});
+    } else {
+      issues.push({item:"MCV",val:`${mcv} fL`,lv:"g",note:"理想値（90〜95 fL）内です。赤血球のサイズは良好な状態です。"});
+    }
+  }
+
+  // ── 中性脂肪（理想: 80〜100 mg/dL）──────────────────────
+  if(trig!==null){
+    if(trig<80){
+      cc++;
+      issues.push({item:"中性脂肪",val:`${trig} mg/dL`,lv:"c",
+        note:`理想値（80〜100 mg/dL）を下回っています。低栄養・低糖質ダイエット過多・交感神経優位・甲状腺機能低下の可能性があります。\n\nATP産生不足→運動中のエネルギー切れ・倦怠感の原因に。甲状腺機能低下では無気力・むくみ・体重増加・便秘・冷えが起こりやすくなります。${lowCarb?" 過度な糖質制限が原因の可能性が高いです。":""}${hasThyroidHx?" 甲状腺疾患の既往があるため特に注意が必要です。":""}`});
+      diet.push({icon:"",title:"適切な糖質エネルギーを確保する",
+        body:"過度な糖質制限はATP産生不足・自律神経の乱れを招きます。1日100〜130gの糖質を確保しましょう。\n\nまた、健全な脂質代謝のためにはオメガ3系脂肪酸（EPA/DHA）の摂取も重要です。",
+        foods:["さつまいも・バナナ・玄米","オートミール","青魚（EPA/DHA）"]});
+    } else if(trig>150){
+      wc++;
+      issues.push({item:"中性脂肪",val:`${trig} mg/dL`,lv:"w",
+        note:"理想値（80〜100 mg/dL）を大きく超えています。糖質・アルコールの過剰摂取が主因のことが多いです。慢性炎症・脂肪肝・インスリン抵抗性のリスクが高まります。\n\n最新エビデンス：青魚のn-3系脂肪酸（EPA/DHA）は中性脂肪を25〜30%低下させるメタ分析のデータがあります（複数のRCT）。"});
+      diet.push({icon:"",title:"中性脂肪を下げる食事（エビデンスレベル高）",
+        body:"果糖（清涼飲料・果物ジュース）とアルコールが特に中性脂肪を上昇させます。青魚のEPA/DHAを積極的に摂取しましょう。\n\n有酸素運動（特にHIIT）は中性脂肪を最も効率的に低下させることがネットワークメタ分析（28 RCT）で示されています。",
+        foods:["さば・いわし・さんま（EPA/DHA）","えごま油・アマニ油（ALA）","くるみ","アボカド"]});
+    } else if(trig>100&&trig<=150){
+      cc++;
+      issues.push({item:"中性脂肪",val:`${trig} mg/dL`,lv:"c",note:"理想値（80〜100 mg/dL）をやや超えています。食事内容・運動習慣を見直しましょう。"});
+    } else {
+      issues.push({item:"中性脂肪",val:`${trig} mg/dL`,lv:"g",note:"理想値（80〜100 mg/dL）内です。良好な状態です。"});
+    }
+  }
+
+  // ── AST/ALT（理想: 18〜20 U/L）──────────────────────────
+  if(ast!==null&&alt!==null){
+    const bothLow=ast<16&&alt<16, altHigh=alt>ast, bigDiff=(ast-alt)>=3&&alt<ast;
+    if(bothLow){
+      wc++;
+      issues.push({item:"AST・ALT（両方低値）",val:`AST:${ast}/ALT:${alt}`,lv:"w",
+        note:`両方16未満は低タンパクの重要なサインです。AST・ALTはアミノ酸代謝酵素であり、低値は肝臓・筋肉でのタンパク質合成・代謝が低下していることを示します。${slowRec?" 運動後の回復が遅いのもこれが原因の可能性があります。":""}\n\n消化機能の低下→タンパク吸収不全も疑われます。「よく噛む」ことで消化の連鎖（咀嚼→迷走神経活性化→胃酸・膵液分泌）が始まります。`});
+      diet.push({icon:"",title:"タンパク質を毎食しっかり摂る",
+        body:`体重×1.2〜1.6g/日が目標（体重50kgなら60〜80g/日）。毎食20〜30g意識しましょう。\n\n消化機能が低下している場合は、よく噛む（一口20〜30回）ことと消化酵素サプリの検討も有効です。${noAnimal?" 動物性タンパクを避けている場合は大豆・豆類・ナッツ・ヘンプシードを積極的に。":""}`,
+        foods:["鶏むね肉・魚","卵（完全タンパク）","木綿豆腐・納豆","ヘンプシード（全必須アミノ酸）"]});
+    } else if(altHigh){
+      cc++;
+      issues.push({item:"ALT>AST（VB6不足・脂肪肝）",val:`AST:${ast}/ALT:${alt}`,lv:"c",
+        note:"ALTの方が高い状態は隠れ脂肪肝・ビタミンB6不足のサインです。ALTは肝臓に特異的な酵素で、VB6はALTの補酵素として機能します。VB6不足→ALT活性低下→相対的にALT高値になります。\n\nVB6はタンパク代謝・セロトニン合成・グリコーゲン代謝にも必須で、不足は気分低下・PMS・免疫低下にもつながります。"});
+      if(!takesSuppB) diet.push({icon:"",title:"VB6（ビタミンB6）を積極的に摂る",
+        body:"VB6は水溶性で熱に弱いため、生食・軽調理で摂るのが効率的です。1日推奨量は1.0〜1.6mg（厚労省）ですが、ストレスが多い場合はより多くの需要があります。",
+        foods:["かつお・まぐろ（VB6最高）","レバー・豚肉","ブロッコリー・バナナ","豆類（大豆・ひよこ豆）"]});
+    } else if(bigDiff){
+      cc++;
+      issues.push({item:"AST-ALT差（VB6不足）",val:`AST:${ast}/ALT:${alt}`,lv:"c",
+        note:"ASTとALTの差が3以上でALTが低い場合もVB6不足のサインです。タンパク代謝・神経機能の低下につながります。"});
+      if(!diet.find(d=>d.title.includes("VB6"))&&!takesSuppB){
+        diet.push({icon:"",title:"VB6（ビタミンB6）を補給する",
+          body:"VB6はタンパク代謝・セロトニン産生の両方に関わる重要なビタミンです。",
+          foods:["かつお・まぐろ","レバー・豚肉","ブロッコリー・豆類"]});
+      }
+    } else if(ast>=18&&ast<=20&&alt>=18&&alt<=20){
+      issues.push({item:"AST/ALT",val:`AST:${ast}/ALT:${alt}`,lv:"g",note:"理想値（18〜20 U/L）内です。タンパク代謝・肝機能は良好です。"});
+    } else {
+      issues.push({item:"AST/ALT",val:`AST:${ast}/ALT:${alt}`,lv:"g",note:"バランスは良好です。理想値（18〜20 U/L）の範囲内です。"});
+    }
+  } else {
+    if(ast!==null){
+      if(ast<16){cc++;issues.push({item:"AST",val:`${ast} U/L`,lv:"c",note:"16未満は低タンパクのサインです。"});}
+      else if(ast>30){cc++;issues.push({item:"AST",val:`${ast} U/L`,lv:"c",note:"高値。肝臓・筋肉への負担を確認しましょう。"});}
+      else issues.push({item:"AST",val:`${ast} U/L`,lv:"g",note:"理想値（18〜20 U/L）の範囲内です。"});
+    }
+    if(alt!==null){
+      if(alt<16){cc++;issues.push({item:"ALT",val:`${alt} U/L`,lv:"c",note:"16未満は低タンパクのサインです。"});}
+      else if(alt>30){cc++;issues.push({item:"ALT",val:`${alt} U/L`,lv:"c",note:"高値。脂肪肝・VB6不足を確認しましょう。"});}
+      else issues.push({item:"ALT",val:`${alt} U/L`,lv:"g",note:"理想値（18〜20 U/L）の範囲内です。"});
+    }
+  }
+
+  // ── LDLコレステロール（理想: 100未満）────────────────────
+  // 元資料の基準（100未満）を維持。消化機能指標としての低値も維持。
+  if(ldl!==null){
+    if(ldl>=160){
+      wc++;
+      issues.push({item:"LDLコレステロール",val:`${ldl} mg/dL`,lv:"w",
+        note:"理想値（100未満）を大きく超えています。慢性炎症・動脈硬化リスクが高まります。飽和脂肪酸の過剰摂取・消化機能低下が背景にある場合があります。高値が続く場合は医師への相談を推奨します。"});
+      diet.push({icon:"",title:"LDLを下げる食事（エビデンスレベル高）",
+        body:"水溶性食物繊維（オートミールのβ-グルカン・こんにゃく）はLDLを5〜10%低下させるメタ分析のデータがあります。飽和脂肪酸（バター・脂身）を不飽和脂肪酸（魚・オリーブ油）に置き換えましょう。\n\nトランス脂肪酸（マーガリン・ショートニング・市販揚げ物）は特に避けてください。",
+        foods:["青魚（さば・いわし）","オリーブオイル（MUFA）","オートミール（β-グルカン）","こんにゃく・ひじき（水溶性食物繊維）","アボカド・ナッツ"]});
+    } else if(ldl>=100&&ldl<160){
+      cc++;
+      issues.push({item:"LDLコレステロール",val:`${ldl} mg/dL`,lv:"c",
+        note:"理想値（100未満）を超えています。消化機能の低下の疑いがあります。食事内容と消化機能を見直しましょう。"});
+    } else if(ldl>=60&&ldl<100){
+      issues.push({item:"LDLコレステロール",val:`${ldl} mg/dL`,lv:"g",note:"理想値（100未満）内です。消化機能も問題ない範囲です。"});
+    } else if(ldl>=40&&ldl<60){
+      cc++;
+      issues.push({item:"LDLコレステロール",val:`${ldl} mg/dL`,lv:"c",
+        note:"低値（60未満）は消化機能の低下・低タンパクのサインです。タンパク・脂質の吸収が低下している可能性があります。"});
+      supps.push({icon:"",title:"消化酵素サポートの検討",
+        body:"【改善できること】タンパク質・脂質の消化吸収を助け、LDL低値の改善につながります。\n理由：LDL低値は消化機能の低下が主な原因のひとつ。消化酵素を補うことで食事からの栄養吸収率が上がります。\n【使い方】食事の直前に服用。スーパーエンザイムまたはDigest Basicが推奨。\n⚠️ 胃炎・潰瘍がある場合は医師に相談してください。"});
+    } else {
+      wc++;
+      issues.push({item:"LDLコレステロール",val:`${ldl} mg/dL`,lv:"w",
+        note:"40未満は消化機能の著しい低下・重篤な疾患のサインである可能性があります。医師への受診を推奨します。"});
+      supps.push({icon:"",title:"スーパーエンザイム（食直前）",
+        body:"【改善できること】著しく低下した消化・吸収機能を補助し、栄養の消化不全を改善します。\n理由：LDL 40未満は消化機能の著しい低下を示すサイン。強力な消化酵素を補うことで胃酸・膵酵素の働きを助けます。\n【使い方】食事の直前に服用。\n⚠️ 必ず医師にも相談してください。"});
+    }
+    // 中間域サプリ追加
+    if(ldl>=60&&ldl<80){
+      cc++;
+      supps.push({icon:"",title:"Digest Basic（食直前）の検討",body:"【改善できること】消化吸収を助け、LDL値と栄養状態の改善につながります。\n理由：LDL 60〜80はタンパク・脂質の消化吸収が低下しているサイン。消化酵素サプリで吸収効率を高めましょう。\n【使い方】食事の直前に服用。"});
+    } else if(ldl>=80&&ldl<100){
+      supps.push({icon:"",title:"わかもとの検討",body:"【改善できること】消化力を補助し、栄養吸収の最適化につながります。\n理由：LDL 80〜100は消化機能がやや低下している可能性を示します。わかもとは消化酵素＋乳酸菌の複合サプリで腸内環境も同時にサポートします。\n【使い方】食後に服用。"});
+    }
+  }
+
+  if(pregnant||breastfeeding){
+    warns.push(`${pregnant?"妊娠中":"授乳中"}は鉄・葉酸・カルシウム・DHA・タンパク質の需要が通常より大幅に増加します。必ず産婦人科・管理栄養士にご相談ください。`);
+    diet.push({icon:"",title:`${pregnant?"妊娠中":"授乳中"}の栄養補給`,
+      body:"特に葉酸（神経管発達）・鉄・DHAを意識的に摂りましょう。",
+      foods:["レバー（週1回まで）","青魚（さば・いわし）","ほうれん草","卵","乳製品","豆腐・納豆"]});
+  }
+
+  // ─── 生理・月経サイクルの分析（女性のみ） ───────────────
+  const mensSym=pv.mensSym||[];
+  const isHeavyFlow=pv.flowHeavy==="heavy"||pv.flowHeavy==="veryheavy";
+  const hasPMS=pv.pms==="moderate"||pv.pms==="severe";
+  const hasDysmenorrhea=pv.dysmenorrhea==="moderate"||pv.dysmenorrhea==="severe";
+  const isIrregular=pv.cycleRegular==="irregular"||pv.cycleRegular==="noperiod";
+
+  if(female&&pv.pregnant!=="yes"&&pv.pregnant!=="breastfeeding"&&pv.flowHeavy){
+    if(isHeavyFlow){
+      warns.push(`経血量が多い状態です。毎月の出血による鉄喪失が大きく、鉄欠乏・貧血のリスクが特に高まっています。${hemo!==null&&hemo<13.5?"ヘモグロビンが低値のため、経血過多との関連が疑われます。":""}フェリチン値の定期的な確認も推奨します。`);
+      lifeAdv.push({icon:"",title:"経血過多と鉄欠乏：毎月の鉄補給が重要",
+        body:"経血量が多い場合、毎月のサイクルで大量の鉄が失われます。日本人女性の月経時の鉄喪失量は平均20〜30mg/周期ですが、経血過多の場合は2〜3倍に達することも。\n\n【鉄補給の戦略】\n①ヘム鉄（動物性）を週3〜4回意識的に摂取\n②生理終了後の1〜2週間は特に鉄補給を強化\n③食事中のお茶・コーヒーは鉄吸収を妨げるため食後1時間は避ける\n④フェリチン（貯蔵鉄）もヘモグロビンと合わせて確認を（Hb正常でもフェリチン低値の「潜在性鉄欠乏」は多い）\n\n経血量が特に多い・血の塊が出る場合は子宮筋腫・子宮内膜症の可能性もあります。婦人科への相談を推奨します。"});
+    }
+    if(hasDysmenorrhea){
+      lifeAdv.push({icon:"",title:"生理痛の改善：炎症・プロスタグランジンを抑制する",
+        body:"生理痛の主因はプロスタグランジン（炎症性物質）の過剰産生です。慢性炎症状態にあるほど生理痛は悪化しやすくなります。\n\n【エビデンスベースの栄養対策】\n①オメガ3（EPA/DHA）：プロスタグランジン産生を抑制。複数のRCTで生理痛の有意な軽減を確認。生理1〜2週間前からの服用開始が効果的。\n②マグネシウム：子宮筋の過収縮を緩和。RCTで生理痛・PMS改善に有効。\n③ビタミンD：欠乏と生理痛の強さに相関あり（観察研究）。\n④ビタミンE：400IU/日を生理2日前からでプロスタグランジン産生抑制（RCT）。\n\n炎症を促進するオメガ6過剰（植物油・加工食品）を減らし、抗炎症食品（青魚・緑黄色野菜・生姜）を増やしましょう。"});
+    }
+    if(hasPMS){
+      lifeAdv.push({icon:"",title:"PMS対策：ホルモンバランスと神経伝達物質を整える",
+        body:"PMSの主因はエストロゲン・プロゲステロンの急激な変動による、セロトニン・GABAの不安定化です。\n\n【エビデンスベースの栄養介入】\n①カルシウム（1000〜1200mg/日）：複数のRCTでPMS症状を48%改善\n②マグネシウム：イライラ・水分貯留・頭痛の改善（メタ分析）\n③ビタミンB6（50〜100mg/日）：セロトニン合成を促進。PMSの気分症状に有効（RCT）\n\n黄体期（生理2週間前）の精製糖・カフェイン・アルコールは血糖不安定化を招きPMSを悪化させます。この時期は特に血糖の安定化を意識しましょう。"});
+      if(mensSym.includes("pmsCraving")||mensSym.includes("pmsAppetite")){
+        lifeAdv.push({icon:"",title:"生理前の甘いもの・炭水化物への衝動への対処法",
+          body:"生理前の炭水化物・甘いものへの強い欲求は、プロゲステロン増加によるセロトニン低下が原因です。セロトニン産生に炭水化物＋トリプトファンが必要なため、体が本能的に炭水化物を求めます。\n\n精製糖ではなく複合糖質（玄米・さつまいも・バナナ）＋タンパク質の組み合わせを選びましょう。チョコレートはカカオ70%以上のダークチョコ（マグネシウム補給にもなる）に切り替えを。\n\n【トレーナーへのメモ】黄体期は基礎代謝が自然に上昇（+100〜300kcal/日）します。この時期の食欲増加は生理的に正常です。摂取カロリーの増加を過度に制限しないよう注意してください。"});
+      }
+    }
+    if(isIrregular){
+      lifeAdv.push({icon:"",title:"生理不順：ホルモンバランスと相対的エネルギー不足",
+        body:`${pv.cycleRegular==="noperiod"?"無月経":"生理不順"}は視床下部-下垂体-卵巣軸（HPO軸）の乱れのサインです。主な原因は①エネルギー不足（RED-S）②過度な運動ストレス③精神的ストレス④急激な体重変化⑤甲状腺機能異常です。\n\n【トレーナーへのメモ（重要）】相対的エネルギー不足（RED-S）は特に注意が必要です。消費に対してエネルギー摂取が不十分だと月経機能が停止します。カロリー制限の程度とトレーニングボリュームのバランスを慎重に確認してください。無月経が3ヶ月以上続く場合は婦人科への受診を強く推奨します。`});
+    }
+    if(mensSym.includes("pmsMood")||mensSym.includes("pmsInsomnia")){
+      lifeAdv.push({icon:"",title:"生理前後の気分・睡眠の乱れ",
+        body:"生理前のプロゲステロン急落→セロトニン・GABAの低下が気分の落ち込み・不眠の主因です。\n\n①マグネシウム（グリシン酸）：就寝前に補給。神経の鎮静・GABA活性化・睡眠の質改善\n②L-テアニン：GABA受容体に作用。2025年メタ分析（19 RCT）で睡眠の質改善を確認\n③ビタミンB6：セロトニン・GABA合成に必須。黄体期に特に不足しやすい\n\n黄体期は深夜まで起きている行動はホルモン乱れを悪化させます。就寝・起床時間を固定することが特に重要です。"});
+    }
+    if(mensSym.includes("pmsSkin")){
+      lifeAdv.push({icon:"✨",title:"生理前の肌荒れ・ニキビ",
+        body:"生理前のエストロゲン低下・プロゲステロン増加→皮脂分泌増加によりニキビが起きやすくなります。\n\n①亜鉛（グリシン酸亜鉛）：皮脂抑制・抗炎症。生理前2週間から補給\n②オメガ3：皮脂の質を改善し炎症性ニキビを減らす\n③精製糖を避ける：インスリンスパイクがアンドロゲン分泌を増加させ皮脂過剰の原因に"});
+    }
+    if(pv.flowHeavy||hasDysmenorrhea||hasPMS){
+      lifeAdv.push({icon:"️",title:"【トレーナーへのメモ】月経周期に合わせたプログラム設計",
+        body:`生理周期に合わせて強度を変えると成果とウェルネスが向上します（月経周期トレーニング）。\n\n【卵胞期（生理終了〜排卵・約14日間）】\nエストロゲン上昇→筋力・パワー・回復力が最も高い時期\n→ 高強度・高ボリューム・新しい動作パターンの習得に最適\n\n【黄体期（排卵〜生理前・約14日間）】\nプロゲステロン優位→体温上昇・疲労しやすい・靭帯弛緩による怪我リスク上昇\n→ 中〜低強度・有酸素重視・十分な休息を確保\n${hasDysmenorrhea?"・生理2〜3日目は特に強度を落とすか休息日に設定することを推奨\n":""}${isHeavyFlow?"・経血過多がある場合、生理中の高強度有酸素は鉄損失を増やす可能性があります\n":""}${pv.pms==="severe"?"・PMSが強い時期（生理1〜2週前）のパフォーマンス低下は生理的に正常です。クライアントにその旨を伝え、過度なプレッシャーをかけないようにしてください":""}` });
+    }
+  }
+
+  // ─── 生活習慣アドバイス ──────────────────────────────────
+  if(hasMF) lifeAdv.push({icon:"",title:"起床時疲労：副腎疲労を改善する",
+    body:"朝に疲れが残っている状態は副腎疲労のサインです。副腎はコルチゾールを産生するために大量のビタミンCを消費します。\n\n①就寝前のスマホ・強い光を避ける\n②夕食は就寝2〜3時間前までに\n③カフェインは14時以降摂らない\n④起床後すぐに日光を浴びる（コルチゾールの自然なリズムを整える）\n⑤朝食は必ず摂る（血糖安定→副腎の負担を減らす）"});
+  if(hasDiz) lifeAdv.push({icon:"",title:"立ちくらみ・めまい",
+    body:`立ちくらみ・めまいの原因は主に①鉄欠乏による貧血②低血圧③自律神経の乱れ④低血糖の4つです。${hemo!==null&&hemo<13.5?"\nヘモグロビンが低値のため、鉄欠乏が主因の可能性が高いです。鉄補給を最優先に。":""}\n急に立ち上がるときはゆっくりと。水分補給（1日1.5〜2L）も有効です。`});
+
+  const stress=parseInt(lv.stress)||0, sleep=parseFloat(lv.sleep)||0;
+  if(stress>=4) lifeAdv.push({icon:"",title:"自律神経のリセット習慣",
+    body:"ストレス高→交感神経活性→屈筋群の緊張増加・伸展筋群の抑制→姿勢悪化・呼吸浅化→光・音過敏という連鎖が起きています。\n\n①デジタルデトックス（就寝1時間前スマホ禁止）\n②瞑想・深呼吸（4-7-8呼吸法: 4秒吸う→7秒止める→8秒吐く）\n③38〜40℃のお風呂に15分入浴（副交感神経優位化）\n④迷走神経の活性化：有酸素運動・ハミング・冷水を首筋にあてる"});
+  if(sleep<6||lv.sleepQuality==="bad") lifeAdv.push({icon:"",title:"睡眠の質を最優先に改善する",
+    body:`睡眠不足は慢性炎症を促進し、筋損傷の回復遅延・血糖コントロール悪化・コルチゾール過剰分泌につながります。${sleep<6?"現在"+sleep+"時間は不足しています。目標は7〜8時間。":"睡眠の質が低い状態です。"}\n\n①就寝・起床時間を毎日固定（休日も±30分以内）\n②就寝1時間前：照明を暗く・スマホオフ・入浴\n③カフェインは14時以降摂らない\n④マグネシウム（グリシン酸マグネシウム）の夜間補給が睡眠の質を改善するエビデンスがあります`});
+  if(lv.mealFreq==="1"||lv.mealFreq==="2") lifeAdv.push({icon:"️",title:"食事回数と血糖安定の関係",
+    body:"食事回数が少ないと低血糖→コルチゾール過剰→副腎疲労のサイクルに入りやすくなります。1日3食＋必要に応じて補食。まごわやさしい食材を中心に、ハンドポーションを量の目安にしましょう。"});
+  if(lv.chewing==="fast"||lv.chewing==="medium") lifeAdv.push({icon:"",title:"咀嚼が消化力・自律神経を変える",
+    body:`咀嚼→迷走神経活性化→唾液（消化酵素アミラーゼ・抗菌タンパク・ムチン）分泌→胃酸分泌→膵液・胆汁分泌という消化の連鎖が始まります。\n\n${lv.chewing==="fast"?"かなり早食いの傾向があります。":"やや早食いの傾向があります。"}一口20〜30回を意識し、食事に15〜20分以上かけましょう。食事中はスマホを置いて副交感神経を優位に。`});
+  if(lv.fermented==="rarely"||lv.fermented==="never") lifeAdv.push({icon:"",title:"腸内環境と全身の健康",
+    body:"腸はセロトニンの90%・免疫細胞の70%が集まる「第二の脳」です。発酵食品の摂取が少ないと腸内細菌叢（マイクロバイオーム）が乱れやすくなります。\n\n毎食1品、発酵食品を取り入れましょう。",
+    foods:["みそ汁（毎日・熱湯をかけず70℃以下で）","納豆","ヨーグルト（無糖・ビフィズス菌）","キムチ・ぬか漬け（植物性乳酸菌）","甘酒（麹菌）"]});
+  if(deskWork) lifeAdv.push({icon:"",title:"デスクワーク：姿勢と体幹の維持",
+    body:"デスクワーク中心の生活では背面の過緊張＋前面の弱化→腰痛・肩こり・慢性疲労につながります。\n\n①1時間に1回立ち上がって背伸び（腸腰筋のリリース）\n②肩甲骨を寄せる習慣（胸椎伸展で呼吸が深くなる）\n③分節運動（キャットカウ）を朝晩10回\n④スタンディングデスクの活用（可能なら）\n⑤ランチ後の10分ウォーキングが血糖コントロールと集中力向上に有効"});
+
+  if(syms.includes("weather")) lifeAdv.push({icon:"️",title:"気象病対策：副腎と酸素供給を整える",
+    body:`低気圧→気圧低下→酸素分圧の低下→ATP産生不足。健全な副腎機能（コルチゾール産生）が血管収縮を行い気象変化への適応を助けます。${hemo!==null&&hemo<13.5?"\n鉄欠乏→ヘモグロビン低下→血管拡張→気象病悪化。鉄補給が最優先。":""}${glucose!==null&&glucose>100?"\nインスリン抵抗性による血管拡張も関与しています。":""}\n\n①規則正しい食事で血糖安定②ビタミンC豊富な食品（副腎サポート）③天気が崩れる前日は早めの就寝④地中海食スタイルを基本に`});
+  if(syms.includes("migraine")){
+    lifeAdv.push({icon:"",title:"片頭痛対策：血管拡張の根本原因を取り除く",
+      body:`片頭痛の主因は血管拡張です。①副腎機能低下②インスリン抵抗性③鉄欠乏→一酸化窒素除去能力低下④ATP不足⑤ヒスタミン過剰が主な原因です。${hemo!==null&&hemo<13.5?"\nヘモグロビン低下→一酸化窒素除去能力低下→血管拡張→頭痛。鉄補給が最重要。":""}\n\n①規則正しい食事（低血糖を避ける）②マグネシウム補給（ATP産生・血管収縮に関与・複数のRCTで有効性確認）③十分な睡眠④カフェイン・アルコールを控える\n\nマグネシウムは片頭痛予防に最もエビデンスのある栄養素のひとつです（予防効果: 41%減、メタ分析）。`});
+    warns.push("片頭痛を誘発するヒスタミン高含有食品：カツオ・サバ・イワシ・マグロの缶詰、熟成チーズ・乳製品、発酵食品、なす・トマト・ピーマン、ナッツ類、チョコレート、加工肉（ハム・ソーセージ）。症状が出やすい時期は控えめにしましょう。");
+  }
+  if(syms.includes("fatigue")) lifeAdv.push({icon:"⚡",title:"慢性疲労の根本原因を解消する",
+    body:"慢性疲労の根底には「慢性炎症・低血糖・消化機能低下・ミトコンドリア機能低下」の4つがあります。\n\n①低血糖サイクルを断つ：補食を活用\n②消化機能の改善：よく噛むことが第一歩\n③睡眠の質を高める：7〜8時間・22〜23時就寝\n④有酸素運動：迷走神経を活性化し副交感神経を優位に\n⑤ミトコンドリアサポート：CoQ10・マグネシウム・B群・αリポ酸"});
+  if(syms.includes("digestion")) lifeAdv.push({icon:"",title:"消化力を高める3ステップ",
+    body:"消化は自律神経がコントロールしています。\n\n①機械的消化：よく噛む（一口20〜30回）。咀嚼で胃酸・膵液・胆汁の分泌が促進されます。\n②化学的消化：リラックスして食べる（副交感神経優位）。食事中はスマホを置きましょう。食前に深呼吸3回。\n③生物学的消化：発酵食品・プロバイオティクスで腸内環境を整えましょう。\n\nLDLが低値の場合、消化酵素サプリの補助も検討してください。"});
+  if(syms.includes("cold")) lifeAdv.push({icon:"",title:"冷え性の改善：血流と自律神経を整える",
+    body:`冷え性の主な原因は①鉄欠乏による貧血②甲状腺機能低下③自律神経の乱れ④低血糖・エネルギー不足の4つです。${hemo!==null&&hemo<13.5?"\nヘモグロビンが低く酸素供給不足が冷えの主因です。鉄補給を最優先に。":""}\n\n①入浴（38〜40℃・15〜20分）末梢血管を拡張させ血流を改善\n②有酸素運動：毛細血管を増やし血流を改善（特にウォーキング）\n③冷たい飲み物・食べ物を控える\n④生姜・根菜類を積極的に（末梢血管拡張効果）`});
+  if(syms.includes("mood")){
+    lifeAdv.push({icon:"",title:"気分の安定：神経伝達物質と栄養の関係",
+      body:`セロトニン合成には鉄・トリプトファン・VB6・マグネシウムが必要です。ドーパミン合成にはチロシン・鉄・VB6・葉酸・銅が必要です。${hemo!==null&&hemo<13.5?"\n鉄欠乏があるためセロトニン・ドーパミン産生が低下している可能性が高いです。鉄補給が最重要。":""}\n\n①午前中に15〜30分の日光浴（セロトニン産生を直接促進）\n②適度な有酸素運動（BDNFを増加させ神経新生を促す）\n③腸内環境の改善（セロトニンの90%は腸で産生）\n④腹式呼吸・瞑想（扁桃体の過活動を抑制）`});
+    diet.push({icon:"",title:"セロトニン・ドーパミンを高める食事",
+      body:"トリプトファン＋炭水化物＋VB6の組み合わせが最もセロトニン産生に効果的です。腸内環境の改善（プロバイオティクス）もセロトニン産生に直結します。",
+      foods:["バナナ（トリプトファン＋VB6）","大豆製品・卵","鶏肉（トリプトファン）","発酵食品（腸活）","カカオ70%以上のチョコ（マグネシウム）"]});
+  }
+
+  // ─── サプリメントアドバイス（血液検査・症状・目的に連動） ──
+  // ビタミンD（未摂取 & 血糖高値 or 中性脂肪高値 or 炎症症状）
+  if(!takesSuppVitD){
+    const vitDneeded=
+      (glucose!==null&&glucose>100)||
+      (hba1c!==null&&hba1c>5.5)||
+      (trig!==null&&trig>150)||
+      syms.includes("fatigue")||syms.includes("mood")||syms.includes("cold");
+    if(vitDneeded) supps.push({icon:"☀️",title:"ビタミンD3＋K2（未摂取）",
+      body:`【改善できること】血糖コントロール・中性脂肪・免疫・気分・筋力を総合的に改善します。\n理由：ビタミンDはインスリン分泌・受容体感受性・免疫制御・セロトニン合成・筋力維持に関わる多機能ホルモン前駆体です。日本人の約80%が不足しているとされます。\n\n【エビデンス】2024年アンブレラレビュー（RCT統合）：空腹時血糖 -0.377 mg/dL・HbA1c -0.479%・中性脂肪 -0.385 mg/dL の有意な改善を確認。\n\n【推奨用量】D3: 2,000〜5,000 IU/日（目標血中濃度: 50〜80 ng/mL）\n重要：K2（MK-7: 100〜200 µg/日）と必ずセットで。K2がカルシウムを骨に誘導し、動脈石灰化を防ぎます。\n測定推奨：開始前後に血中25(OH)D濃度を確認するとベストです。`});
+  }
+
+  // オメガ3（未摂取 & 中性脂肪高値 or LDL高値 or 炎症）
+  if(!takesSuppOmega3){
+    const omega3needed=
+      (trig!==null&&trig>100)||
+      (ldl!==null&&ldl>=100)||
+      syms.includes("migraine")||syms.includes("mood")||syms.includes("weather");
+    if(omega3needed) supps.push({icon:"",title:"オメガ3（EPA/DHA）（未摂取）",
+      body:`【改善できること】中性脂肪の低下・慢性炎症の抑制・気分・片頭痛の改善につながります。\n理由：EPAは炎症の終息を促すレゾルビンを産生。DHAは脳の乾燥重量の15〜20%を占め、認知・気分・睡眠に直結。オメガ3/オメガ6比の改善が全身の炎症状態を整えます。\n\n【エビデンス】EPA+DHA 3〜4g/日で中性脂肪20〜50%低下（用量依存性・JAHA 2024メタ分析）。片頭痛頻度の低下を示すRCTもあり。\n\n【推奨用量】EPA+DHA合計: 1〜2g/日（予防）〜3〜4g/日（治療的用途・要医師相談）\n注意：魚由来（EPA/DHA）と植物由来（ALA）は別物。ALA→EPA/DHA変換率はわずか5〜15%のみ。魚油または藻油が推奨。抗凝固薬服用中は医師に相談。酸化しやすいため冷蔵保存・開封後3ヶ月以内に使用。`});
+  }
+
+  // CoQ10（未摂取 & 運動後回復遅い or 慢性疲労 or 年齢40代以上）
+  const age=parseInt(cv.age)||0;
+  if(!takesSuppCoQ10){
+    const coq10needed=slowRec||syms.includes("fatigue")||(age>=40);
+    if(coq10needed) supps.push({icon:"⚡",title:"CoQ10（ユビキノール）（未摂取）",
+      body:`【改善できること】運動後の回復促進・慢性疲労の軽減・ミトコンドリア機能の向上につながります。${age>=40?" 加齢（特に40代以降）で体内合成が低下するため、積極的な補給が推奨されます。":""}${slowRec?" 現在の回復の遅さに直接対応できるサプリです。":""}\n理由：CoQ10はミトコンドリアの電子伝達系の必須コンポーネントで、全細胞のATP産生に関わります。不足するとエネルギー産生が低下し、運動後の回復が遅くなります。\n\n【エビデンス】2024年メタ分析（28 RCT・830名）：CoQ10補給で運動後の筋損傷マーカー（CK・LDH・ミオグロビン・MDA）が有意に低下。最適用量は300〜400mg/日。\n\n【推奨用量】100〜300mg/日（ユビキノール型が吸収率3〜4倍で推奨）\n脂溶性のため食事（良質な脂質）と一緒に摂取。スタチン系薬剤服用中はCoQ10合成が阻害されるため特に必要です。`});
+  }
+
+  // アシュワガンダ（未摂取 & ストレス高値 or 疲労 or 筋肉目的）
+  if(!takesSuppAshwa){
+    const stress=parseInt(lv.stress)||0;
+    const ashwaneeded=stress>=4||syms.includes("fatigue")||ev.goal==="muscle"||ev.goal==="performance";
+    if(ashwaneeded) supps.push({icon:"",title:"アシュワガンダ（KSM-66またはSensoril）（未摂取）",
+      body:`【改善できること】コルチゾール（ストレスホルモン）の過剰分泌を抑制し、ストレス耐性・筋力・睡眠の質を改善します。\n理由：アシュワガンダはHPA軸（視床下部-下垂体-副腎軸）に作用し、慢性的なストレス状態でのコルチゾール過剰産生を正常化します。\n\n【エビデンス】\n・コルチゾール低下：2025年メタ分析（7 RCT・488名）でコルチゾール -1.16 µg/dL（p<0.001）\n・筋力・筋肥大：RCT（KSM-66）でベンチプレス +46kg vs プラセボ +26kg（p=0.001）、テストステロン +96 ng/dL vs +18 ng/dL（p=0.004）\n・不安軽減：HAM-Aスコアによる有意な改善（メタ分析・15 RCT・873名）\n\n【推奨用量】KSM-66（根エキス）: 300〜600mg/日・12週間以上継続。夜就寝前または食事と一緒。\n⚠️ 甲状腺疾患・自己免疫疾患がある場合は医師に相談。`});
+  }
+
+  // クレアチン（未摂取 & 筋肥大 or 競技向上目的）
+  if(!takesSuppCreatine&&(ev.goal==="muscle"||ev.goal==="performance")){
+    supps.push({icon:"",title:"クレアチンモノハイドレート（未摂取）",
+      body:`【改善できること】筋力・筋肉量・高強度パフォーマンスの向上、および運動後回復の促進につながります。\n理由：クレアチンはPCr（ホスホクレアチン）の再合成を促進→ATP産生速度が上がり、高強度運動（特に10秒以内の爆発的な動作）のパフォーマンスが向上します。\n\n【エビデンス】複数のメタ分析・コクランレビュー・ISSNが公式推奨する、最もエビデンスが蓄積されたスポーツサプリ。回復促進・認知機能改善のエビデンスも蓄積中。\n\n【推奨用量】3〜5g/日を継続摂取（ローディング不要・研究で同等効果を確認）\nモノハイドレート型が最も研究されており推奨。腎機能が正常な成人では長期安全性が確認されています。`});
+  }
+
+  if(!takesSuppBCAA&&(slowRec||(ast!==null&&alt!==null&&ast<16&&alt<16))){
+    supps.push({icon:"",title:"BCAA（分岐鎖アミノ酸）の検討",
+      body:`【改善できること】運動後の筋肉痛・筋損傷マーカーの軽減、回復スピードの向上につながります。\n理由：BCAAs（ロイシン・イソロイシン・バリン）はmTORC1経路を直接活性化し、筋タンパク合成シグナルを速やかに高めます。特にロイシンが鍵です。\n\n【エビデンス】メタ分析でDOMS（遅発性筋肉痛）軽減・CK（筋損傷マーカー）低下に有効と確認。\n\n【重要な注意点】タンパク質摂取量が十分（体重×1.6g/日以上）であれば追加効果は限定的。まずホールフード（肉・魚・卵）でのタンパク確保を優先しましょう。\n\n【推奨用量】5〜10g/回（ロイシン比率2:1:1）を運動前後に。`});
+  }
+
+  if(!takesSuppProb&&(lv.fermented==="rarely"||lv.fermented==="never"||syms.includes("digestion")||syms.includes("mood"))){
+    supps.push({icon:"",title:"プロバイオティクス（未摂取）",
+      body:`【改善できること】腸内環境の整備を通じて、消化機能・気分・免疫・慢性炎症を改善します。\n理由：腸はセロトニンの90%・免疫細胞の70%が集まる器官です。腸内細菌叢の乱れは消化不良・気分の不安定・慢性炎症・リーキーガット症候群と関連します。\n\n【エビデンス】特定菌株はIBSの症状改善（L.plantarum、複数のRCT）、腸粘膜バリア強化・SCFA産生促進（L.acidophilus + B.longum）が確認されています。\n\n【推奨菌株】一般的な腸内環境改善：L.acidophilus + B.longum / IBS・下痢改善：L.rhamnosus GG\n【用量】100億〜500億CFU/日。食事と一緒または直後。抗生物質服用時は2時間以上間隔を空ける。`});
+  }
+
+  if(!takesSuppZinc&&(ev.goal==="muscle"||pv.gender==="male"||syms.includes("fatigue"))){
+    supps.push({icon:"⚡",title:"亜鉛（グリシン酸亜鉛またはピコリン酸亜鉛）（未摂取）",
+      body:`【改善できること】免疫力・テストステロン（男性）・組織修復・インスリン機能の維持・改善につながります。\n理由：亜鉛はNK細胞・T細胞の活性化、テストステロン合成、コラーゲン・タンパク質合成の補酵素、インスリン分子の構造維持に関与する多機能ミネラルです。\n\n【エビデンス】メタ分析で風邪罹患期間を33%短縮。亜鉛欠乏とテストステロン低下の相関はRCTで確認。\n\n【推奨用量】8〜15mg/日（過剰は銅吸収を阻害するため40mg/日以下）\nグリシン酸亜鉛またはピコリン酸亜鉛が酸化亜鉛・硫酸亜鉛より吸収率が高い。食前30分または就寝前が推奨。`});
+  }
+
+  // テアニン（未摂取 & 睡眠の質が悪い or ストレス高 or 気分の落ち込み）
+  if(!takesSuppTheanine){
+    const stress2=parseInt(lv.stress)||0;
+    const theanineNeeded=lv.sleepQuality==="bad"||stress2>=4||syms.includes("mood")||syms.includes("fatigue");
+    if(theanineNeeded) supps.push({icon:"",title:"L-テアニン（未摂取）",
+      body:`【改善できること】睡眠の質・入眠のしやすさ・リラックスした集中力を改善します。\n理由：テアニンはGABA受容体を活性化しアルファ波（リラックス脳波）を増加させます。興奮性神経伝達物質グルタミン酸の過剰活動を抑制し、カフェインなしで「穏やかな覚醒状態」を作ります。\n\n【エビデンス】2025年メタ分析（19 RCT・897名）：入眠潜時（SMD=0.15, p=0.04）・日中機能障害（SMD=0.33, p<0.001）・全体的な睡眠の質（SMD=0.43, p=0.03）の有意な改善を確認。\n\n【推奨用量】100〜200mg/日（就寝前30〜60分が最も効果的）\n緑茶1杯には5〜85mgのみ。効果には100〜400mgが必要です。眠気を引き起こさないため日中使用も可能。`});
+  }
+
+  // イチョウ葉（未摂取 & 気象病 or 冷え性 or 40代以上）
+  if(!takesSuppGinkgo){
+    const ginkgoNeeded=syms.includes("weather")||syms.includes("cold")||age>=40||syms.includes("migraine");
+    if(ginkgoNeeded) supps.push({icon:"",title:"イチョウ葉エキス（EGb761）（未摂取）",
+      body:`【改善できること】末梢血流の改善・気象病・冷え性の緩和、MCI・認知症がある場合は認知機能の維持につながります。\n理由：EGb761のフラボノイドは抗酸化・血小板凝集抑制、テルペノイドは脳血流改善に作用します。末梢循環を改善することで気圧変化への適応を助けます。\n\n【エビデンスの正直な評価】\n✅ MCI・認知症患者：記憶・日常生活機能の改善（EGb761 120mg以上・複数のRCTメタ分析で確認）\n✅ 末梢血流・冷え性・気象病：血流改善効果は複数の研究で確認\n⚠️ 健常者の認知機能改善：効果量がほぼゼロ（d=-0.04〜-0.08・メタ分析・非有意）\n\n【推奨用量】EGb761（標準化エキス）120〜240mg/日（食事と一緒・2〜3回に分けて）\n⚠️ 抗凝固薬・抗血小板薬との相互作用あり。手術前2週間は中断を推奨。`});
+  }
+
+  // チロシン（未摂取 & ストレス高 or パフォーマンス目的）
+  if(!takesSuppTyrosine){
+    const stress3=parseInt(lv.stress)||0;
+    const tyrosineNeeded=stress3>=4||syms.includes("fatigue")||syms.includes("mood")||ev.goal==="performance";
+    if(tyrosineNeeded) supps.push({icon:"",title:"L-チロシン（未摂取）",
+      body:`【改善できること】ストレス・睡眠不足・高負荷時のワーキングメモリ低下を防ぎ、集中力・認知パフォーマンスを維持します。\n理由：チロシンはドーパミン・ノルエピネフリン（カテコールアミン）の直接前駆体です。慢性ストレスでカテコールアミンが枯渇すると認知機能が低下しますが、チロシンを補給することで産生を維持できます。\n\n【エビデンス】複数のRCTでストレス・睡眠不足・寒冷環境下でのワーキングメモリ維持を確認。米陸軍・米海軍SERE訓練での極限環境下での認知維持に有効性を確認。\n⚠️ 通常状態・低ストレス時での効果は限定的。高齢者での高用量は逆効果の可能性（逆U字カーブ）あり。\n\n【推奨用量】500〜2,000mg（作業・運動1〜2時間前・空腹時）\n⚠️ 甲状腺疾患がある場合は必ず医師に相談（甲状腺ホルモンの前駆体）`});
+  }
+
+  // レシチン（未摂取 & ALT>AST or 高LDL or 消化症状）
+  if(!takesSuppLecithin){
+    const lecithinNeeded=(ast!==null&&alt!==null&&alt>ast)||(ldl!==null&&ldl>=100)||syms.includes("digestion")||syms.includes("fatigue");
+    if(lecithinNeeded) supps.push({icon:"",title:"レシチン（ホスファチジルコリン）（未摂取）",
+      body:`【改善できること】肝臓の脂肪蓄積（脂肪肝）の改善・胆汁分泌促進・アセチルコリン産生のサポートにつながります。\n理由：ホスファチジルコリン（PC）はVLDL産生を促進して肝臓からの脂質排出を助け、脂肪肝の改善に作用します。また胆汁の主成分としても消化を助けます。\n\n【エビデンス】複数のRCT・メタ分析で肝脂肪の減少・ALT/AST改善を確認。2024年のRCTでは12週間でグレードS3脂肪肝の割合が84.6%→51.3%に改善。${ast!==null&&alt!==null&&alt>ast?" 現在のALT>ASTパターンに特に有効です。ビタミンB6との相乗効果もあります。":""}\n\n⚠️ 認知機能改善としてのサプリ効果は観察研究のみ。RCTでの確証はまだ得られていません。\n\n【推奨用量】1,200〜2,400mg/日（食事と一緒）\n食品から摂る場合：卵黄・大豆・レバー・魚卵が豊富`});
+  }
+
+  // アルギニン（未摂取 & 冷え性 or 血流 or 運動パフォーマンス）
+  if(!takesSuppArginine){
+    const arginineNeeded=syms.includes("cold")||syms.includes("fatigue")||ev.goal==="performance"||ev.goal==="muscle"||breathless;
+    if(arginineNeeded) supps.push({icon:"",title:"L-アルギニン（またはL-シトルリン）（未摂取）",
+      body:`【改善できること】末梢血流・冷え性の改善、血圧の正常化、運動パフォーマンスの向上につながります。\n理由：アルギニンは一酸化窒素（NO）合成の直接基質です。NOが血管を拡張させることで、末梢まで血液が届きやすくなります。\n\n【エビデンス】メタ分析でL-アルギニン補給による収縮期血圧の有意な低下を確認。RCT（6g単回摂取）で酸素消費量の削減・高強度運動の耐容能向上を確認。\n\n L-シトルリンの方が腸での分解が少なく、血中アルギニン濃度の上昇により有効（43研究のレビュー）。効率重視ならシトルリンが推奨。\n\n【推奨用量】L-アルギニン: 3〜6g/日 / L-シトルリン: 3〜6g/日（運動1時間前）\n⚠️ ヘルペスウイルス感染歴がある場合は控える。血圧降下薬服用中は医師に相談。`});
+  }
+
+  if(!takesSuppProtein){
+    const proteinNeeded=(ast!==null&&alt!==null&&ast<16&&alt<16)||slowRec||ev.goal==="muscle"||ev.goal==="performance"||noAnimal;
+    if(proteinNeeded) supps.push({icon:"",title:"プロテイン（ホエイ・カゼイン・植物性）（未摂取）",
+      body:`【改善できること】タンパク質不足の解消・筋肉量の増加・運動後の回復促進につながります。${ast!==null&&alt!==null&&ast<16&&alt<16?" 現在のAST/ALT低値（低タンパク）の直接的な改善手段です。":""}${slowRec?" 運動後の回復改善に最も即効性のある方法のひとつです。":""}\n理由：タンパク質は筋肉・酵素・ホルモン・免疫抗体のすべての材料です。食事からの摂取が困難な場合、プロテインサプリは最も効率的な補給手段になります。\n\n【エビデンス】\n・ホエイ：ロイシン含量高く（約11%）mTORC1経路を最も強力に活性化。運動後30分以内の摂取で筋損傷回復・筋肥大を促進。\n・カゼイン：就寝前摂取で筋タンパク合成を8時間持続。睡眠中の成長ホルモン分泌と相乗。\n・植物性（ソイ・エンドウ・ヘンプ）：大豆プロテインはホエイと同等の筋タンパク合成効果を示すメタ分析あり。${noAnimal?" 動物性を避ける場合の最優先選択肢。":""}\n\n【推奨用量】体重×0.3〜0.4g/回（20〜40g）を運動後30分以内または就寝前\nPDCAAS/DIAASスコア1.0のものを選ぶと品質が保証されています。`});
+  }
+
+  const exFreq=parseInt(ev.frequency)||0, exType=ev.type||[];
+  const exIss=ev.issues||[], lvl=ev.level, goal=ev.goal;
+
+  if(!lifeAdv.length) lifeAdv.push({icon:"",title:"睡眠と回復の最適化",
+    body:"7〜8時間の質の良い睡眠は、血糖値・コレステロール・ホルモンバランスを整える基盤です。22〜23時就寝・6〜7時起床のリズムを目指しましょう。就寝1時間前はスマホ・強い照明を避けて。"});
+
+  let status="good",overall="バランス良好です",
+      summary="血液検査値・生活習慣は全体的に良好です。以下のアドバイスを参考に更なる最適化を目指しましょう。";
+  if(wc>=2){status="warning";overall="複数項目の改善が必要";
+    summary=`${wc}項目で理想値から外れています。まず食事・睡眠・消化機能の改善から始めましょう。`;}
+  else if(wc===1||cc>=2){status="caution";overall="注意が必要な項目あり";
+    summary="いくつか気になる数値があります。食事・生活習慣を総合的に整えていきましょう。";}
+  else if(cc===1){status="caution";overall="概ね良好、一部注意";
+    summary="全体的には良好ですが、一部気になる数値があります。早めのケアで数値改善を目指しましょう。";}
+
+  // ─── トレーナー向けサマリー ────────────────────────────
+  const trainerNotes=[];
+
+  if(hemo!==null&&hemo<13.5) trainerNotes.push({tag:"",category:"酸素供給・エネルギー",note:`ヘモグロビン低値（${hemo} g/dL）：酸素運搬能が低下しています。有酸素系の強度を上げると急激な疲労・息切れが出やすい状態です。低〜中強度から段階的に負荷をかけてください。鉄補給が改善するまでHIIT等の高強度インターバルは慎重に。`});
+  if(glucose!==null&&glucose>100) trainerNotes.push({tag:"",category:"血糖管理",note:`空腹時血糖高値（${glucose} mg/dL）：食後30分以内の軽い有酸素が血糖スパイク抑制に有効です。HIITは血糖改善に最もエビデンスがありますが、食後2時間以上空けてから実施してください。セッション中の低血糖リスクにも注意（補食の準備を推奨）。`});
+  if(glucose!==null&&glucose<90) trainerNotes.push({tag:"",category:"低血糖リスク",note:`空腹時血糖低値（${glucose} mg/dL）：機能性低血糖の可能性があります。空腹時のトレーニングは避け、セッション前に補食（炭水化物＋タンパク質）を摂るよう指導してください。運動中の低血糖症状（冷汗・震え・頭痛）に注意。`});
+  if(trig!==null&&trig<80) trainerNotes.push({tag:"",category:"エネルギー貯蔵",note:`中性脂肪低値（${trig} mg/dL）：エネルギー貯蔵が少ない状態です。長時間・高強度のセッションではエネルギー切れが起きやすいため、45〜60分以内に設計してください。糖質摂取の改善と並行して進めましょう。`});
+  if(trig!==null&&trig>150) trainerNotes.push({tag:"",category:"脂質代謝",note:`中性脂肪高値（${trig} mg/dL）：中強度有酸素（最大心拍数60〜70%・週150分以上）を優先したプログラムが効果的です。筋トレとの組み合わせも有効。心拍数の目安：(220-年齢)×0.6〜0.7。`});
+  if(ast!==null&&alt!==null&&ast<16&&alt<16) trainerNotes.push({tag:"",category:"回復・修復能力",note:`AST/ALT両方低値（AST:${ast}/ALT:${alt}）：低タンパクのサインです。筋損傷からの回復が著しく遅い可能性があります。高ボリューム・高強度は控え、回復最優先で設計してください。運動後30分以内のタンパク質補給を強く推奨。セッション頻度は週2〜3回に抑えることを推奨。`});
+  if(ldl!==null&&ldl<60) trainerNotes.push({tag:"",category:"消化吸収",note:`LDL低値（${ldl} mg/dL）：消化吸収機能が著しく低下しています。運動後の栄養補給が正常に吸収されていない可能性があります。消化機能改善を先行させながらトレーニングを進めてください。`});
+  if(slowRec) trainerNotes.push({tag:"",category:"回復速度",note:"運動後の回復に3日以上かかる状態です。オーバーロードのリスクが高いため、ペリオダイゼーション（強度の波）を意識した設計が重要です。HRV（心拍変動）やセルフ評価で回復を確認しながら進めてください。"});
+  if(hemo!==null&&hemo<13.5&&breathless) trainerNotes.push({tag:"",category:"息切れ",note:"ヘモグロビン低値＋息切れあり：有酸素能力が著しく低下しています。会話ができる程度（RPE 11〜13）の低強度から開始し、4〜6週間かけて段階的に負荷を上げてください。"});
+  if(exIss.includes("backpain")) trainerNotes.push({tag:"⚠️",category:"腰痛",note:"腰痛あり：高負荷のスクワット・デッドリフトは避け、まずブリッジ・キャットカウ・デッドバグ等の低閾値運動で多裂筋・体幹を再活性化してください。腰痛が軽減してから段階的に高負荷種目へ移行しましょう。"});
+  if(exIss.includes("shoulderpain")) trainerNotes.push({tag:"⚠️",category:"肩こり・首の痛み",note:"肩こり・首の痛みあり：胸椎の可動域低下と肩甲骨周囲筋の機能不全が主因のことが多いです。オーバーヘッド種目（プレス系）は慎重に。まずフェイスプル・バンドプルアパート・胸椎ローテーションで肩甲骨の安定性を高めてください。ストレートネックの可能性もあるため、頚部ニュートラルを意識したキューイングを心がけましょう。"});
+  if(exIss.includes("kneepain")) trainerNotes.push({tag:"⚠️",category:"膝・股関節の痛み",note:"膝・股関節の痛みあり：大腿四頭筋優位パターン（膝主導）が原因のことが多いです。まずグルートアクティベーション（クラムシェル・ヒップスラスト）で臀筋を活性化し、股関節主導の動作パターンを習得してください。深いスクワットやランジは痛みが軽減するまで避けましょう。ステップアップ・シングルレッグRDLで段階的に進めることを推奨します。"});
+  if(exIss.includes("balance")) trainerNotes.push({tag:"⚠️",category:"バランス",note:"バランス不良：不安定環境（ボス・バランスボード）の前に、まず固定面での安定性（デッドバグ・バードドッグ）を確立してください。片脚種目は壁やTRXサポートから始めましょう。"});
+  if(exIss.includes("stiffness")) trainerNotes.push({tag:"⚠️",category:"柔軟性",note:"身体が硬い：ウォームアップに動的ストレッチ（レッグスイング・ヒップサークル・胸椎ローテーション）を必ず組み込んでください。フォームローリングで筋膜リリースを先行させると効果的です。"});
+  if(exIss.includes("posture")) trainerNotes.push({tag:"⚠️",category:"姿勢（猫背・前傾）",note:"姿勢不良あり：胸椎後弯（猫背）・頭部前方位・骨盤前傾または後傾のパターンを評価してください。プッシュ系（プッシュアップ・プレス）よりプル系（ロウ・フェイスプル・バンドプルアパート）を優先し、前後の筋力バランスを整えましょう。ヒンジパターン（RDL）と胸椎伸展エクササイズを序盤に重点的に組み込んでください。"});
+  if(exIss.includes("weakcore")) trainerNotes.push({tag:"⚠️",category:"体幹の弱さ",note:"体幹弱化あり：高重量のコンパウンド種目の前に体幹の安定性を確立することが怪我予防の鍵です。まずダイアフラム呼吸→デッドバグ→プランク（ハードスタイル）→パリーフ式プレスの順で進めてください。腹横筋・多裂筋・横隔膜・骨盤底筋群の協調的な活性化を意識したキューイングを心がけましょう。"});
+  if(exIss.includes("coordination")) trainerNotes.push({tag:"⚠️",category:"協調性・動作の精度",note:"動きのぎこちなさあり：神経筋コントロールの課題です。複雑な多関節種目の前に、単純な動作パターン（ヒンジ・スクワット・プッシュ・プル）を一つずつ丁寧に習得してください。ミラーニューロン活用のためトレーナーのデモンストレーションと言語キューの組み合わせが効果的です。スロートレーニング（エキセントリック3〜5秒）で動作の質を高めましょう。"});
+  if(deskWork) trainerNotes.push({tag:"",category:"姿勢（デスクワーク）",note:"デスクワーク中心：腸腰筋の過緊張・大殿筋の抑制（lower cross syndrome）が起きやすい状態です。ヒップヒンジパターンの習得とグルートアクティベーションを序盤に重点的に行ってください。"});
+  if(syms.includes("migraine")) trainerNotes.push({tag:"⚠️",category:"片頭痛",note:"片頭痛持ち：高強度運動が誘発因子になる場合があります。セッション前の水分補給を徹底し、急激な強度上昇を避けてください。低血糖も誘発因子のため補食管理を忘れずに。"});
+  if(syms.includes("fatigue")) trainerNotes.push({tag:"⚠️",category:"慢性疲労",note:"慢性疲労あり：オーバートレーニングのリスクが高い状態です。初期は低〜中強度のみ。RPEを必ず確認しながら進め、疲労感が増す場合はボリュームを落としてください。セッション末に呼吸法・軽い有酸素を組み込み副交感神経を優位化してください。"});
+  if(hasMF) trainerNotes.push({tag:"⚠️",category:"起床時疲労",note:"朝の疲労が残っている状態（副腎疲労の可能性）：午前中の高強度トレーニングは避け、夕方以降のセッションが推奨されます。"});
+  if(goal==="diet") trainerNotes.push({tag:"",category:"目標：ダイエット",note:`TDEE: ${tdee||"未入力"} kcal/日${goalCalc?" / 目標摂取: "+goalCalc.daily+" kcal / 1日削減: "+goalCalc.deficit+" kcal":""}。\n脂肪燃焼優先順位：①HIIT（EPOC効果・24〜48時間代謝上昇）→②全身筋トレ（基礎代謝向上）→③低強度有酸素。食後15〜30分のウォーキングを習慣化してください。`});
+  if(goal==="muscle") trainerNotes.push({tag:"",category:"目標：筋肥大",note:`週10〜20セット/筋肉群・1RMの60〜85%・週2回以上の同一筋群刺激が最適（メタ分析より）。\nタンパク質：体重×1.6〜2.2g/日。${ast!==null&&alt!==null&&ast<16&&alt<16?"⚠️ AST/ALT低値（低タンパク）のため消化吸収機能の改善を優先してください。":""}`});
+  if(goal==="performance") trainerNotes.push({tag:"",category:"目標：競技向上",note:`ペリオダイゼーション設計を推奨。競技特異的：基礎体力＝60:40を目安に。${hemo!==null&&hemo<13.5?"⚠️ ヘモグロビン低値により有酸素パフォーマンスが制限されています。鉄補給と並行してください。":""}`});
+  if(goal==="health") trainerNotes.push({tag:"",category:"目標：健康維持",note:"有酸素運動（週150分・中強度）＋筋トレ（週2〜3回）の組み合わせが血液検査値の総合的な改善に最もエビデンスが強いです。ライフスタイルに無理なく組み込める継続可能なプログラムを設計しましょう。"});
+  if(!trainerNotes.length) trainerNotes.push({tag:"✅",category:"特記事項なし",note:"血液検査・身体状況ともに大きな制限はありません。目標に合わせて標準的なプログラムを設計してください。"});
+
+  return{overall,status,summary,issues,diet,lifeAdv,supps,warns,trainerNotes};
+}
+
+// ─── PRINT HTML ───────────────────────────────────────────────
+function buildPrint(res,tdee,bmi,bmiLabel,goalCalc){
+  const sc={good:"#0d6e35",caution:"#856404",warning:"#c0392b"};
+  const sb={good:"#d4f7e0",caution:"#fff3cd",warning:"#fde8e8"};
+  const sl={good:"良好",caution:"注意",warning:"要改善"};
+  const ib={g:"#f0fdf4",c:"#fffbeb",w:"#fef2f2"};
+  const ibd={g:"#bbf7d0",c:"#fde68a",w:"#fca5a5"};
+  const ibt={g:"#166534",c:"#92400e",w:"#991b1b"};
+  const chip=fs=>fs?fs.map(f=>`<span style="display:inline-block;background:#f0fdf4;border:1px solid #86efac;color:#166634;padding:2px 8px;border-radius:20px;font-size:11px;margin:2px">${f}</span>`).join(""):"";
+  const card=items=>items.map(item=>`<div style="border:1px solid #e5e7eb;border-radius:10px;padding:12px 14px;margin-bottom:8px;background:white"><div style="font-weight:700;color:#111827;margin-bottom:6px">${item.icon||""} ${item.title}</div><p style="font-size:13px;color:#4b5563;line-height:1.8;white-space:pre-line;margin-bottom:${item.foods&&item.foods.length?"8px":"0"}">${item.body}</p>${item.foods&&item.foods.length?"<div>"+chip(item.foods)+"</div>":""}</div>`).join("");
+  const sec=(icon,label,color,html)=>html?`<div style="display:flex;align-items:center;gap:8px;margin:20px 0 10px"><div style="width:28px;height:28px;border-radius:8px;background:${color};display:flex;align-items:center;justify-content:center;font-size:14px">${icon}</div><h2 style="font-size:15px;font-weight:700;color:#111827;margin:0">${label}</h2></div>${html}`:"";
+  const date=new Date().toLocaleDateString("ja-JP",{year:"numeric",month:"long",day:"numeric"});
+  const issHtml=res.issues.map(item=>`<div style="background:${ib[item.lv]};border:1px solid ${ibd[item.lv]};border-radius:10px;padding:12px 14px;margin-bottom:8px"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px"><span style="font-weight:700;color:${ibt[item.lv]};font-size:13px">${item.item}</span><span style="background:${ibd[item.lv]};color:${ibt[item.lv]};padding:2px 9px;border-radius:20px;font-size:12px;font-weight:700">${item.val}</span></div><p style="font-size:13px;color:#4b5563;line-height:1.7;white-space:pre-line">${item.note}</p></div>`).join("");
+  const suppHtml=res.supps.map(s=>`<div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:10px;padding:12px 14px;margin-bottom:8px"><div style="font-weight:700;color:#0369a1;margin-bottom:4px">${s.icon} ${s.title}</div><p style="font-size:13px;color:#0c4a6e;line-height:1.7;white-space:pre-line">${s.body}</p></div>`).join("");
+  const trainerHtml=res.trainerNotes.map(n=>`<div style="background:white;border:1px solid #e5e7eb;border-left:4px solid #6366f1;border-radius:0 10px 10px 0;padding:12px 14px;margin-bottom:8px"><div style="font-size:11px;font-weight:700;color:#6366f1;margin-bottom:4px">${n.tag} ${n.category}</div><p style="font-size:13px;color:#374151;line-height:1.8;white-space:pre-line">${n.note}</p></div>`).join("");
+  const calHtml = tdee ? '<div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:12px;padding:14px;margin-bottom:16px"><div style="font-size:11px;font-weight:700;color:#0369a1;margin-bottom:6px"> カロリー目標</div><div style="font-size:18px;font-weight:900;color:#0c4a6e;margin-bottom:8px">TDEE '+tdee.toLocaleString()+' kcal / 日</div><div style="display:flex;flex-wrap:wrap;gap:6px"><span style="background:#e0f2fe;border:1px solid #bae6fd;color:#0369a1;padding:3px 10px;border-radius:20px;font-size:12px;font-weight:600">BMI '+bmi+' ('+bmiLabel+')</span>'+(goalCalc?'<span style="background:#f0fdf4;border:1px solid #86efac;color:#166534;padding:3px 10px;border-radius:20px;font-size:12px;font-weight:600">目標摂取 '+goalCalc.daily.toLocaleString()+' kcal</span>':'')+(goalCalc?'<span style="background:#fef3c7;border:1px solid #fcd34d;color:#92400e;padding:3px 10px;border-radius:20px;font-size:12px;font-weight:600">'+(goalCalc.deficit>0?"-":"+")+Math.abs(goalCalc.deficit)+' kcal/日</span>':'')+'</div></div>' : '';
+  const warnsHtml=res.warns.map(w=>'<div style="background:#fffbeb;border-left:4px solid #f59e0b;padding:10px 14px;margin-bottom:10px;font-size:13px;color:#78350f;line-height:1.7;border-radius:0 8px 8px 0">⚠️ '+w+'</div>').join("");
+  const summaryHtml = '<div style="border-radius:12px;padding:16px;margin-bottom:16px;border:1px solid #e5e7eb;border-top:4px solid '+sc[res.status]+'"><div style="display:flex;align-items:center;gap:12px;margin-bottom:10px"><span style="font-size:28px">'+(res.status==="good"?"✅":res.status==="caution"?"⚠️":"")+'</span><div style="flex:1"><div style="font-size:11px;color:#9ca3af;font-weight:600;margin-bottom:2px">総合判定</div><div style="font-size:19px;font-weight:900;color:#111827">'+res.overall+'</div></div><span style="display:inline-block;padding:3px 12px;border-radius:20px;font-size:12px;font-weight:700;background:'+sb[res.status]+';color:'+sc[res.status]+'">'+sl[res.status]+'</span></div><p style="font-size:13px;color:#4b5563;line-height:1.8">'+res.summary+'</p></div>';
+  const sectionsHtml = (res.trainerNotes&&res.trainerNotes.length?sec("️","トレーナー向けサマリー","#ede9fe",trainerHtml):"")+(res.issues.length?sec("","血液検査：各項目の分析","#fef9c3",issHtml):"")+(res.supps.length?sec("","サプリメントアドバイス","#e0f2fe",suppHtml):"")+(res.diet.length?sec("","食事アドバイス","#dcfce7",card(res.diet)+""):"")+(res.lifeAdv.length?sec("","生活習慣アドバイス","#ede9fe",card(res.lifeAdv)+""):"");
+  const footerHtml = '<div style="margin-top:24px;padding:12px 14px;background:#f9fafb;border-radius:10px;font-size:11px;color:#9ca3af;line-height:1.7">⚠️ このレポートは参考情報です。医療診断の代わりにはなりません。症状が続く場合は医師・専門家にご相談ください。</div>';
+  const headHtml = '<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><title>健康アドバイザー 結果レポート</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:Hiragino Sans,sans-serif;background:white;padding:24px;color:#111827;font-size:14px;line-height:1.7;max-width:720px;margin:0 auto}h1{font-size:22px;font-weight:900;margin-bottom:4px}.header{border-bottom:2px solid #111827;padding-bottom:16px;margin-bottom:20px}@media print{body{padding:10px}div{break-inside:avoid}}</style></head><body><div class="header"><div style="display:flex;align-items:center;gap:12px;margin-bottom:6px"><span style="font-size:28px"></span><div><h1>健康アドバイザー 結果レポート</h1><p style="color:#9ca3af;font-size:12px">'+date+'</p></div></div></div>';
+  return headHtml+calHtml+summaryHtml+warnsHtml+sectionsHtml+footerHtml+'<script>window.onload=function(){window.print();}<\/script></body></html>';
+}
+
+// --- unified plan builder ---
+function buildDietPlan(cv, bv, lv, ev, pv, res){
+  // 入力値の解析
+  const cw=parseFloat(cv.weight)||0;
+  const gw=parseFloat(cv.goalWeight)||0;
+  const weeks=parseInt(cv.weeks)||0;
+  const hasDietGoal=cv.goalWeight&&cv.weeks&&cw>gw;
+  const tdee=cv.height&&cv.weight&&cv.age&&cv.gender&&cv.activity
+    ?calcTDEE(parseFloat(cv.height),cw,parseFloat(cv.age),cv.gender,cv.activity):null;
+
+  const isFemale=cv.gender==="female";
+  const highStress=parseInt(lv.stress)>=4;
+  const poorSleep=lv.sleep==="5"||lv.sleep==="6"||lv.sleepQuality==="bad";
+  const hasPMS=isFemale&&(pv.pms==="moderate"||pv.pms==="severe");
+  const hasHeavyFlow=isFemale&&(pv.flowHeavy==="heavy"||pv.flowHeavy==="veryheavy");
+  const isIrregular=isFemale&&(pv.cycleRegular==="irregular"||pv.cycleRegular==="noperiod");
+  const hasHighGlucose=bv.glucose&&parseFloat(bv.glucose)>100;
+  const hasLowHemo=bv.hemoglobin&&parseFloat(bv.hemoglobin)<13.5;
+  const hasLowAST=bv.ast&&bv.alt&&parseFloat(bv.ast)<16&&parseFloat(bv.alt)<16;
+  const hasHighTrig=bv.trig&&parseFloat(bv.trig)>150;
+  const hasHighLDL=bv.ldl&&parseFloat(bv.ldl)>=100;
+  const syms=lv.symptoms||[];
+  const exIss=ev.issues||[];
+  const mensSym=pv.mensSym||[];
+  const hasMigraine=syms.includes("migraine");
+  const hasFatigue=syms.includes("fatigue");
+  const hasDizz=syms.includes("dizziness")||lv.dizziness==="yes";
+  const hasMF=lv.morningFatigue==="yes";
+  const noAnimal=lv.animal==="none"||lv.animal==="rare";
+  const deskWork=ev.worktype==="desk";
+  const slowRec=ev.recovery==="slow";
+  const goalType=ev.goal;
+
+  // 月別計画の月数（目標設定ありなら期間、なしは3ヶ月固定）
+  const months=hasDietGoal?Math.ceil(weeks/4):3;
+  const lossPerMonth=hasDietGoal?(cw-gw)/months:0;
+
+  // 全フェーズ共通の「あなた固有の注意点」を収集
+  function buildPersonalAlerts(){
+    const alerts=[];
+    if(hasLowHemo) alerts.push("鉄欠乏（Hb低値）: 酸素運搬能が低下しています。鉄補給を最優先に。高強度運動は貧血が改善してから段階的に。");
+    if(hasHighGlucose) alerts.push("血糖値高め: 精製糖・清涼飲料水を除去。食後15〜30分のウォーキングを毎食後に習慣化。");
+    if(hasHighTrig) alerts.push("中性脂肪高値: 果糖（ジュース・清涼飲料水）とアルコールが主犯。青魚（EPA/DHA）を週3〜4回に。");
+    if(hasHighLDL) alerts.push("LDL高値: 飽和脂肪酸（バター・脂身）をオリーブ油・青魚に置き換え。水溶性食物繊維（オートミール・こんにゃく）を毎食に。");
+    if(hasLowAST) alerts.push("消化吸収不全（AST/ALT低値）: よく噛む（一口20〜30回）+消化酵素サプリを食直前に。タンパク質が吸収されていない状態です。");
+    if(highStress) alerts.push("ストレス高値: コルチゾール過剰→インスリン抵抗性→脂肪蓄積の連鎖が起きています。ストレス管理を並行して行ってください。");
+    if(poorSleep) alerts.push("睡眠不足: グレリン（食欲増進）増加・レプチン（満腹）低下により過食しやすい状態です。睡眠の改善が最優先です。");
+    if(hasLowHemo&&hasHeavyFlow) alerts.push("経血過多+鉄欠乏: 毎月の鉄喪失が大きい状態です。生理終了後の1〜2週間に鉄補給を集中させてください。");
+    if(hasMigraine) alerts.push("片頭痛: 低血糖・睡眠不足・高強度運動が誘発因子。補食管理と血糖安定化を徹底してください。");
+    if(hasFatigue) alerts.push("慢性疲労: 過負荷のリスクが高い状態です。回復を最優先に。副交感神経を優位にする習慣（呼吸法・入浴）を取り入れて。");
+    if(hasMF) alerts.push("起床時疲労（副腎疲労）: 午前中の高強度運動は避け、朝食と日光浴を必ず行ってください。");
+    if(deskWork) alerts.push("デスクワーク: 腸腰筋過緊張・大殿筋抑制が起きやすい。1時間に1回立ち上がり、ランチ後10分ウォーキングを習慣に。");
+    if(exIss.includes("backpain")) alerts.push("腰痛あり: 高負荷種目（スクワット・デッドリフト）は痛みが改善してから。まず体幹安定化（ブリッジ・デッドバグ）を優先してください。");
+    if(isIrregular) alerts.push("生理不順: 相対的エネルギー不足（RED-S）が原因の可能性があります。カロリー制限の程度とトレーニング量のバランスを必ず確認してください。");
+    return alerts;
+  }
+
+  // フェーズ別のプラン生成
+  const plans=[];
+  for(let m=1;m<=months;m++){
+    const startW=hasDietGoal?Math.round((cw-(lossPerMonth*(m-1)))*10)/10:cw;
+    const endW=hasDietGoal?Math.max(Math.round((cw-(lossPerMonth*m))*10)/10,gw):cw;
+    const targetKcal=hasDietGoal&&tdee?Math.round(tdee-(lossPerMonth*7200/28)):tdee||null;
+
+    let phase,phaseColor,phaseBg;
+    if(m===1){phase="[1] 基盤構築期";phaseColor="#2e7d32";phaseBg="#e8f5e9";}
+    else if(m<=Math.ceil(months*0.5)){phase="[2] 脂肪燃焼・改善期";phaseColor="#f57f17";phaseBg="#fff9c4";}
+    else if(m<months){phase="[3] 定着・代謝維持期";phaseColor="#0277bd";phaseBg="#e1f5fe";}
+    else{phase="[4] 仕上げ・習慣化期";phaseColor="#1b5e20";phaseBg="#f1f8e9";}
+
+    const diet=[], supps=[], life=[];
+
+    // ─ 食事プラン（最重要3項目に絞る） ─
+    const dietAll=[];
+    if(targetKcal) dietAll.push("摂取カロリー "+targetKcal.toLocaleString()+" kcal/日。タンパク質 "+Math.round(cw*(m===1?1.6:1.9))+"g/日（毎食20〜30g）を最優先で確保");
+    dietAll.push("ベジファースト: 野菜→タンパク→糖質の順で食べる（血糖スパイクを15〜20%抑制）");
+    if(m===1) dietAll.push("糖質は最低100〜130g/日確保。過度な制限はホルモンバランスを乱す原因に");
+    if(m>=2) dietAll.push("週1回リフィードデイ: その日だけTDEE（"+( tdee||"維持カロリー")+"kcal）まで食べる。停滞期対策として有効");
+    if(hasHighGlucose) dietAll.push("甘い飲み物・精製糖を除去。食後すぐ15分歩く");
+    if(hasLowHemo||noAnimal) dietAll.push("鉄補給: 赤身肉・あさり・小松菜を週3〜4回。お茶・コーヒーは食事中に飲まない");
+    if(hasPMS&&m>=2) dietAll.push("生理前2週間: 食欲増加は正常。精製糖ではなくさつまいも・バナナ・玄米で対応");
+    if(m>=months) dietAll.push("終了後: 毎週100〜150kcalずつ増やして維持カロリーへ（リバウンド防止）");
+    diet.push(...dietAll.slice(0,3));
+
+    // ─ サプリ（積み上げ式：継続+今月追加を明示） ─
+    if(m===1){
+      supps.push("[今月から] ビタミンD3 2000〜5000IU + K2 100µg（食事と一緒）");
+      supps.push("[今月から] マグネシウム グリシン酸 200〜400mg（就寝前）");
+      if(hasLowAST) supps.push("[今月から] 消化酵素（食直前）: AST/ALT低値のため吸収改善が最優先");
+      else if(hasLowHemo) supps.push("[今月から] ヘム鉄サプリ（空腹時）: ヘモグロビン改善・エネルギー回復");
+      else if(poorSleep) supps.push("[今月から] L-テアニン 100〜200mg（就寝前）: 睡眠の質を改善");
+    } else if(m===2){
+      supps.push("[継続] VitD3+K2 / マグネシウム");
+      supps.push("[今月追加] オメガ3 EPA/DHA 2g（食事と一緒）: 炎症抑制・代謝適応を遅らせる");
+      if(hasPMS||hasMigraine) supps.push("[今月追加] カルシウム 1000mg: PMS・片頭痛の予防");
+      else supps.push("[今月追加] CoQ10 100〜200mg（食事と一緒）: ミトコンドリア機能を補助");
+    } else if(m<months){
+      supps.push("[継続] VitD3+K2 / マグネシウム / オメガ3");
+      supps.push("[今月追加] アシュワガンダ KSM-66 300〜600mg（就寝前）: 長期ダイエットによるコルチゾール上昇を抑制");
+      if(hasPMS) supps.push("[今月追加] ビタミンB6 50mg: 生理前のPMS・気分低下を軽減");
+    } else {
+      supps.push("[継続] VitD3+K2 / マグネシウム / オメガ3");
+      supps.push("[今月追加] クレアチン 3〜5g/日: 筋肉量を維持してリバウンドを防ぐ");
+      supps.push("[今月追加] プロテイン（運動後+就寝前）: 筋肉量維持が最優先");
+    }
+    supps.length=Math.min(supps.length,3);
+
+    // ─ 生活習慣：月ごとに固定で異なる科学的根拠のある習慣 ─
+    // 各月に割り当てる習慣プール（12種・毎月必ず違うものを提案）
+    const habitPool = [
+      // 1ヶ月目
+      [
+        "就寝・起床時間を毎日固定する（休日も±30分以内）: サーカディアンリズムを整えることで睡眠の質・代謝・ホルモンバランスが改善。複数のRCTで体重・血糖コントロールの改善を確認。",
+        "毎食後15分ウォーキング: 食後すぐ歩くことで血糖スパイクを20〜30%抑制（複数のRCTで確認）。1日3回×15分＝45分の有酸素効果も得られる。",
+        "就寝1時間前にスマホ・PCをオフにする: ブルーライトがメラトニン分泌を阻害。入眠潜時の短縮・睡眠効率向上が複数のRCTで確認されている。"
+      ],
+      // 2ヶ月目
+      [
+        "起床後すぐコップ1杯（200〜300ml）の水を飲む: 一晩の脱水を補い代謝を活性化。起立性低血圧の予防にも有効（立ちくらみ改善のRCTで確認）。",
+        "4-7-8呼吸法を1日3回実施（4秒吸う→7秒止める→8秒吐く）: 副交感神経を即座に活性化しコルチゾールを低下させる。HRV（心拍変動）の改善がRCTで確認。",
+        "入浴は38〜40℃のお湯に15分浸かる: シャワーではなく入浴で深部体温が上昇→その後の体温低下が睡眠を促進。睡眠の質向上がRCTで確認されている。"
+      ],
+      // 3ヶ月目
+      [
+        "起床後15分以内に日光を浴びる: コルチゾールの自然なピークを作りサーカディアンリズムを整える。セロトニン産生促進→夜のメラトニン分泌にも直結。",
+        "毎食に発酵食品を1品取り入れる（みそ汁・納豆・ヨーグルトなど）: 腸内細菌叢の多様性を高め、SCFAの産生を促進。気分・免疫・代謝の改善がRCTで確認。",
+        "食事中はスマホを置いて20分以上かけて食べる: 副交感神経が優位になり消化酵素の分泌が改善。満腹シグナルが正常化され過食を防ぐ（咀嚼RCTで確認）。"
+      ],
+      // 4ヶ月目以降はローテーション
+      [
+        "体重・ウエストを週3回同じ条件で計測する（起床後・排尿後）: セルフモニタリングが体重維持率を2倍以上高めることがコホート研究で確認。数値を見て微調整する習慣を。",
+        "14時以降カフェインを摂らない: カフェインの半減期は5〜7時間。14時のカフェインが就寝時にも残り睡眠の質を低下させる。カフェインカットで睡眠効率が平均19分改善（RCT）。",
+        "就寝前に今日の「良かったこと3つ」を書く（感謝日記）: ポジティブな振り返りがコルチゾールを低下させ睡眠の質を向上させることがRCTで確認。"
+      ],
+      [
+        "起床後スクワット30回を習慣化する: 朝の筋収縮が骨格筋のGLUT4を活性化し、一日の血糖取り込み効率が向上。わずか5分の朝運動が血糖コントロールを改善（RCT）。",
+        "補食はナッツ（一握り）またはチーズ＋ゆで卵に限定する: 脂質＋タンパク質の補食は血糖を安定させグレリン（食欲増進ホルモン）の上昇を抑制。精製糖の補食より満腹感が長続き（RCT）。",
+        "入浴後10分のストレッチ（特に股関節・胸椎）: 体温が高い入浴後は筋肉が柔らかく伸びやすい。就寝前ストレッチが睡眠の質を向上させることがRCTで確認。"
+      ],
+    ];
+
+    // 月番号に応じてインデックスを循環させる（必ず違うセットを提案）
+    const habitSetIndex = (m - 1) % habitPool.length;
+    const baseHabits = habitPool[habitSetIndex];
+
+    // 個人の状態に応じた追加・差し替え
+    const personalHabits = [];
+    if(m===1&&poorSleep) personalHabits.push("【優先】就寝・起床時間の固定から始める: 睡眠不足の状態では他の習慣の効果が半減します。まず睡眠のリズムを整えることを最優先に。");
+    if(m===1&&highStress) personalHabits.push("【優先】4-7-8呼吸法を毎朝・毎晩実施: ストレスが高い状態ではコルチゾール過剰により脂肪が蓄積しやすくなります。");
+    if(m===1&&hasMF) personalHabits.push("【優先】起床後すぐ日光を浴びて朝食を食べる: 副腎疲労のある方は朝のルーティンを整えることが最重要です。");
+
+    // 個人習慣がある場合は最初の1つと差し替え、なければbaseHabitsをそのまま使用
+    if(personalHabits.length>0){
+      life.push(personalHabits[0]);
+      life.push(baseHabits[0]);
+      life.push(baseHabits[1]);
+    } else {
+      life.push(...baseHabits);
+    }
+
+    const personalAlerts=m===1?buildPersonalAlerts():[];
+    const warning=m===2&&hasDietGoal?"停滞期が来やすい時期です（体重の5%減少でホメオスタシスが作動）。焦らず戦略的に対処しましょう。":null;
+    plans.push({month:m,phase,phaseColor,phaseBg,startWeight:startW,endWeight:endW,targetKcal,diet,supps,life,warning,personalAlerts});
+  }
+  return plans;
+}
+
+
+function TextInput({label,ideal,unit,ph,value,onChange}){
+  return(<div style={{marginBottom:16}}><div style={{display:"flex",justifyContent:"space-between",marginBottom:6}}><label style={{fontSize:13,fontWeight:700,color:"#2e7d32"}}>{label}</label>{ideal&&<span style={{fontSize:11,color:"#81c784"}}>理想: {ideal} {unit}</span>}</div><div style={{position:"relative"}}><input type="text" inputMode="decimal" placeholder={ph} value={value} onChange={e=>onChange(e.target.value)} style={{width:"100%",padding:"12px 50px 12px 14px",border:"1.5px solid #e8f5e9",borderRadius:12,fontSize:16,fontFamily:"inherit",background:"#f9fdf9",outline:"none",WebkitAppearance:"none",color:"#1b5e20"}} onFocus={e=>e.target.style.borderColor="#43a047"} onBlur={e=>e.target.style.borderColor="#e8f5e9"}/><span style={{position:"absolute",right:12,top:"50%",transform:"translateY(-50%)",fontSize:11,color:"#81c784",pointerEvents:"none"}}>{unit}</span></div></div>);
+}
+function NumField({label,unit,ph,value,onChange}){
+  return(<div style={{marginBottom:14}}><label style={{fontSize:13,fontWeight:700,color:"#2e7d32",display:"block",marginBottom:6}}>{label}</label><div style={{position:"relative"}}><input type="text" inputMode="decimal" placeholder={ph} value={value||""} onChange={e=>onChange(e.target.value)} style={{width:"100%",padding:unit?"12px 44px 12px 14px":"12px 14px",border:"1.5px solid #e8f5e9",borderRadius:12,fontSize:16,fontFamily:"inherit",background:"#f9fdf9",outline:"none",WebkitAppearance:"none",color:"#1b5e20"}} onFocus={e=>e.target.style.borderColor="#43a047"} onBlur={e=>e.target.style.borderColor="#e8f5e9"}/>{unit&&<span style={{position:"absolute",right:12,top:"50%",transform:"translateY(-50%)",fontSize:12,color:"#81c784",pointerEvents:"none"}}>{unit}</span>}</div></div>);
+}
+function OptSelect({label,options,value,onChange}){
+  return(<div style={{marginBottom:18}}><div style={{fontSize:13,fontWeight:700,color:"#2e7d32",marginBottom:8}}>{label}</div><div style={{display:"flex",flexWrap:"wrap",gap:6}}>{options.map(o=>(<button key={o.v} onClick={()=>onChange(o.v)} style={{padding:"8px 14px",borderRadius:10,border:`1.5px solid ${value===o.v?"#43a047":"#e8f5e9"}`,background:value===o.v?"#e8f5e9":"#fff",color:value===o.v?"#1b5e20":"#546e7a",fontSize:13,fontWeight:value===o.v?700:400,cursor:"pointer",fontFamily:"inherit",boxShadow:value===o.v?"0 2px 6px rgba(67,160,71,0.15)":"none"}}>{o.l}</button>))}</div></div>);
+}
+function ToggleChip({active,onClick,icon,label}){
+  return(<button onClick={onClick} style={{border:`1.5px solid ${active?"#43a047":"#e8f5e9"}`,borderRadius:10,padding:"8px 12px",fontSize:13,cursor:"pointer",fontFamily:"inherit",background:active?"#e8f5e9":"white",color:active?"#2e7d32":"#546e7a",display:"flex",alignItems:"center",gap:5,fontWeight:active?700:400,boxShadow:active?"0 2px 6px rgba(67,160,71,0.15)":"none"}}>{icon&&<span>{icon}</span>}{label}</button>);
+}
+function ACard({item}){
+  return(<div style={{background:"#fff",borderRadius:16,padding:"15px 16px",marginBottom:10,border:"1px solid #e8f5e9",boxShadow:"0 2px 8px rgba(67,160,71,0.08)"}}><div style={{fontSize:14,fontWeight:700,color:"#1b5e20",marginBottom:7,display:"flex",alignItems:"center",gap:7}}>{item.icon} {item.title}</div><div style={{fontSize:13,color:"#37474f",lineHeight:1.8,whiteSpace:"pre-line",marginBottom:item.foods?.length?10:0}}>{item.body}</div>{item.foods?.length>0&&<div>{item.foods.map((f,j)=><span key={j} style={{display:"inline-block",background:"#e8f5e9",border:"1px solid #a5d6a7",color:"#2e7d32",padding:"3px 10px",borderRadius:20,fontSize:12,fontWeight:500,margin:"2px 3px"}}>{f}</span>)}</div>}</div>);
+}
+function Sec({icon,label,color,children}){
+  return(<div style={{marginBottom:20}}><div style={{display:"flex",alignItems:"center",gap:9,marginBottom:12}}><div style={{width:34,height:34,borderRadius:10,background:color,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,flexShrink:0}}>{icon}</div><h2 style={{fontSize:15,fontWeight:800,color:"#1b5e20"}}>{label}</h2></div>{children}</div>);
+}
+function Card({children,style}){return <div style={{background:"#fff",borderRadius:18,padding:20,boxShadow:"0 2px 12px rgba(67,160,71,0.1)",border:"1px solid #e8f5e9",...style}}>{children}</div>;}
+
+
+// ─── APP ──────────────────────────────────────────────────────
+function App(){
+  const [step,setStep]=useState(0);
+  const [bv,setBv]=useState({});
+  const [lv,setLv]=useState({symptoms:[]});
+  const [ev,setEv]=useState({type:[],issues:[]});
+  const [pv,setPv]=useState({history:[],mensSym:[]});
+  const [res,setRes]=useState(null);
+  const [cv,setCv]=useState({});
+  const [calTab,setCalTab]=useState("tdee");
+
+  const setB=(k,v)=>setBv(p=>({...p,[k]:v}));
+  const setL=(k,v)=>setLv(p=>({...p,[k]:v}));
+  const setE=(k,v)=>setEv(p=>({...p,[k]:v}));
+  const setP=(k,v)=>setPv(p=>({...p,[k]:v}));
+  const setC=(k,v)=>setCv(p=>({...p,[k]:v}));
+  const tog=(setter,key,val)=>setter(p=>({...p,[key]:p[key].includes(val)?p[key].filter(x=>x!==val):[...p[key],val]}));
+  const filled=BF.filter(f=>bv[f.key]&&bv[f.key]!=="").length;
+  const goTo=(n)=>{setStep(n);window.scrollTo({top:0,behavior:"smooth"});};
+  const [habitSel,setHabitSel]=useState({});
+  const ss=res?STAT[res.status]:null;
+  const tdee=cv.height&&cv.weight&&cv.age&&cv.gender&&cv.activity?calcTDEE(parseFloat(cv.height),parseFloat(cv.weight),parseFloat(cv.age),cv.gender,cv.activity):null;
+  const goalCalc=tdee&&cv.goalWeight&&cv.weeks?calcGoal(tdee,parseFloat(cv.weight),parseFloat(cv.goalWeight),parseFloat(cv.weeks)):null;
+  const bmi=cv.height&&cv.weight?(parseFloat(cv.weight)/Math.pow(parseFloat(cv.height)/100,2)).toFixed(1):null;
+  const bmiLabel=bmi?(bmi<18.5?"低体重":bmi<25?"標準":bmi<30?"過体重":"肥満"):"";
+  const bmiColor=bmi?(bmi<18.5?"#3b82f6":bmi<25?"#22c55e":bmi<30?"#f59e0b":"#ef4444"):"#111827";
+  const finish=()=>{setRes(analyze(bv,lv,ev,pv,cv,tdee,goalCalc));setStep(6);window.scrollTo({top:0,behavior:"smooth"});};
+  const reset=()=>{setStep(0);setRes(null);setBv({});setLv({symptoms:[]});setEv({type:[],issues:[]});setPv({history:[],mensSym:[]});setHabitSel({});window.scrollTo({top:0,behavior:"smooth"});};
+  const handlePrint=()=>{if(!res)return;const html=buildPrint(res,tdee,bmi,bmiLabel,goalCalc);const blob=new Blob([html],{type:"text/html;charset=utf-8"});window.open(URL.createObjectURL(blob),"_blank");};
+
+  const css1 = "box-sizing:border-box;margin:0;padding:0";
+  const css2 = "background:#f0f4f0;font-family:sans-serif";
+  const css3 = "background:linear-gradient(135deg,#43a047,#2e7d32);color:#fff;border:none;border-radius:14px;padding:16px;font-size:15px;font-weight:700;cursor:pointer;width:100%;font-family:inherit;letter-spacing:0.3px;box-shadow:0 4px 12px rgba(67,160,71,0.35)";
+  const css4 = "background:#c8e6c9;color:#a5d6a7;cursor:not-allowed;box-shadow:none";
+  const css5 = "background:#fff;border:1.5px solid #e8f5e9;border-radius:12px;padding:11px 20px;font-size:14px;cursor:pointer;font-family:inherit;color:#388e3c;font-weight:600";
+  const css6 = "animation:fade 0.35s cubic-bezier(0.16,1,0.3,1) both";
+  const css7 = "height:6px;background:#e8f5e9;border-radius:3px;overflow:hidden";
+  const css8 = "height:100%;background:linear-gradient(90deg,#43a047,#66bb6a);border-radius:3px;transition:width 0.5s cubic-bezier(0.16,1,0.3,1)";
+  const css9 = "background:#fff8e1;border-left:4px solid #ffc107;border-radius:0 12px 12px 0;padding:12px 16px;margin-bottom:10px;font-size:13px;color:#795548;line-height:1.7;box-shadow:0 1px 4px rgba(0,0,0,0.06)";
+  const css10 = "background:#e8f5e9;border:1px solid #a5d6a7;border-radius:14px;padding:14px 16px;margin-bottom:10px";
+  const css11 = "display:inline-block;padding:4px 12px;border-radius:20px;font-size:11px;font-weight:700";
+  const css12 = "background:linear-gradient(135deg,#e8f5e9,#c8e6c9);border:1px solid #a5d6a7;border-radius:16px;padding:18px;text-align:center;flex:1";
+  const cssStr = "*{"+css1+"}body{"+css2+"}.btn-p{"+css3+"}.btn-p:disabled{"+css4+"}.btn-s{"+css5+"}.fade{"+css6+"}@keyframes fade{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}.prog{"+css7+"}.prog-fill{"+css8+"}.wb{"+css9+"}.supp{"+css10+"}.badge{"+css11+"}.cal-card{"+css12+"}";
+
+  return(
+    <div style={{fontFamily:"sans-serif",minHeight:"100vh",background:"#f0f4f0"}}>
+      <style dangerouslySetInnerHTML={{__html:cssStr}}/>
+      <div style={{maxWidth:480,margin:"0 auto",paddingBottom:60}}>
+        {/* あすけん風グリーンヘッダー */}
+        <div style={{background:"linear-gradient(135deg,#2e7d32,#43a047)",padding:"20px 20px 28px",marginBottom:-16,position:"relative"}}>
+          <div style={{display:"flex",alignItems:"center",gap:12}}>
+            <div style={{width:44,height:44,borderRadius:12,background:"rgba(255,255,255,0.2)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,flexShrink:0}}>
+              {step===6?"":""}
+            </div>
+            <div>
+              <div style={{fontSize:18,fontWeight:900,color:"#fff",letterSpacing:"-0.3px"}}>健康アドバイザー</div>
+              <div style={{fontSize:11,color:"rgba(255,255,255,0.8)",marginTop:2}}>血液検査・食事・生活習慣から個別アドバイス</div>
+            </div>
+          </div>
+          {step<6&&(
+            <div style={{marginTop:16}}>
+              <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:"rgba(255,255,255,0.85)",marginBottom:6}}>
+                <span style={{fontWeight:700}}>STEP {step+1} / {TABS.length}</span>
+                <span style={{fontWeight:700}}>{TABS[step]}</span>
+              </div>
+              <div className="prog"><div className="prog-fill" style={{width:`${((step+1)/TABS.length)*100}%`}}/></div>
+            </div>
+          )}
+        </div>
+        {/* メインコンテンツ */}
+        <div style={{background:"#f0f4f0",borderRadius:"20px 20px 0 0",padding:"24px 16px 100px",minHeight:400}}>
+        {/* ナビゲーションは下部固定バーに移動 */}
+
+        {step===0&&(<div className="fade"><Card style={{marginBottom:100}}><div style={{fontSize:11,fontWeight:700,color:"#43a047",marginBottom:4,letterSpacing:"1px",textTransform:"uppercase"}}>血液検査の値</div><div style={{background:"#e8f5e9",border:"1px solid #a5d6a7",borderRadius:10,padding:"10px 14px",marginBottom:14,fontSize:12,color:"#2e7d32"}}>数値がない場合はスキップできます。入力した項目だけで分析します。</div><div style={{display:"flex",justifyContent:"space-between",fontSize:12,color:"#9ca3af",marginBottom:12}}><span>{filled}/{BF.length} 項目入力済み</span><span>入力が多いほど精度アップ</span></div>{BF.map(f=><TextInput key={f.key} label={f.label} ideal={f.ideal} unit={f.unit} ph={f.ph} value={bv[f.key]||""} onChange={v=>setB(f.key,v)}/>)}</Card></div>)}
+
+        {step===1&&(<div className="fade">
+          <div style={{display:"flex",gap:6,marginBottom:14}}>{[{k:"tdee",l:"[目標] TDEE計算"},{k:"goal",l:" 目標設定"}].map(t=>(<button key={t.k} onClick={()=>setCalTab(t.k)} style={{flex:1,padding:"9px 6px",borderRadius:9,border:calTab===t.k?"none":"1.5px solid #e2e8f0",background:calTab===t.k?"#111827":"white",color:calTab===t.k?"white":"#6b7280",fontSize:13,fontWeight:600,cursor:"pointer",fontFamily:"inherit"}}>{t.l}</button>))}</div>
+          {calTab==="tdee"&&(<Card style={{marginBottom:14}}><div style={{fontSize:11,fontWeight:700,color:"#6366f1",marginBottom:16,letterSpacing:"1px",textTransform:"uppercase"}}>TDEE Calculator</div><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}><NumField label="身長" unit="cm" ph="例: 165" value={cv.height} onChange={v=>setC("height",v)}/><NumField label="体重" unit="kg" ph="例: 60" value={cv.weight} onChange={v=>setC("weight",v)}/><NumField label="年齢" unit="歳" ph="例: 30" value={cv.age} onChange={v=>setC("age",v)}/></div><OptSelect label="性別" value={cv.gender} options={[{v:"male",l:"男性"},{v:"female",l:"女性"}]} onChange={v=>setC("gender",v)}/><OptSelect label="活動レベル" value={cv.activity} options={[{v:"sedentary",l:"ほぼ運動なし"},{v:"light",l:"週1〜2回"},{v:"moderate",l:"週3〜5回"},{v:"active",l:"毎日運動"},{v:"veryactive",l:"非常に活発"}]} onChange={v=>setC("activity",v)}/>{tdee&&(<><div style={{display:"flex",gap:10,marginBottom:12}}><div className="cal-card"><div style={{fontSize:11,fontWeight:700,color:"#0369a1",marginBottom:4}}>TDEE（消費カロリー）</div><div style={{fontFamily:"'Zen Kaku Gothic New',sans-serif",fontSize:28,fontWeight:900,color:"#0c4a6e"}}>{tdee.toLocaleString()}</div><div style={{fontSize:11,color:"#0369a1"}}>kcal/日</div></div>{bmi&&(<div style={{background:"#f9fafb",border:"1px solid #e5e7eb",borderRadius:14,padding:16,textAlign:"center",flex:1}}><div style={{fontSize:11,fontWeight:700,color:"#374151",marginBottom:4}}>BMI</div><div style={{fontFamily:"'Zen Kaku Gothic New',sans-serif",fontSize:28,fontWeight:900,color:bmiColor}}>{bmi}</div><div style={{fontSize:11,color:bmiColor,fontWeight:700}}>{bmiLabel}</div></div>)}</div><div style={{background:"#f9fafb",borderRadius:10,padding:"12px 14px",fontSize:12,color:"#6b7280",lineHeight:1.8}}><span style={{fontWeight:700,color:"#374151"}}>維持カロリー: {tdee} kcal</span><br/>減量目標（-500kcal/日）: {tdee-500} kcal<br/>増量目標（+300kcal/日）: {tdee+300} kcal</div></>)}</Card>)}
+          {calTab==="goal"&&(<Card style={{marginBottom:14}}><div style={{fontSize:11,fontWeight:700,color:"#6366f1",marginBottom:16,letterSpacing:"1px",textTransform:"uppercase"}}>Goal Setting</div>{!tdee&&<div style={{fontSize:13,color:"#9ca3af",textAlign:"center",padding:"20px 0"}}>先に「TDEE計算」タブで基本情報を入力してください</div>}{tdee&&(<><NumField label="目標体重" unit="kg" ph="例: 55" value={cv.goalWeight} onChange={v=>setC("goalWeight",v)}/><OptSelect label="目標期間" value={cv.weeks} options={[{v:"4",l:"1ヶ月"},{v:"8",l:"2ヶ月"},{v:"12",l:"3ヶ月"},{v:"24",l:"6ヶ月"},{v:"52",l:"1年"}]} onChange={v=>setC("weeks",v)}/>{goalCalc&&(<><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}><div className="cal-card"><div style={{fontSize:11,fontWeight:700,color:"#0369a1",marginBottom:4}}>目標摂取カロリー</div><div style={{fontFamily:"'Zen Kaku Gothic New',sans-serif",fontSize:24,fontWeight:900,color:"#0c4a6e"}}>{goalCalc.daily.toLocaleString()}</div><div style={{fontSize:11,color:"#0369a1"}}>kcal/日</div></div><div style={{background:goalCalc.deficit>0?"#f0fdf4":"#f0f9ff",border:`1px solid ${goalCalc.deficit>0?"#86efac":"#bae6fd"}`,borderRadius:14,padding:16,textAlign:"center"}}><div style={{fontSize:11,fontWeight:700,color:goalCalc.deficit>0?"#166534":"#0369a1",marginBottom:4}}>{goalCalc.deficit>0?"1日の削減量":"1日の増加量"}</div><div style={{fontFamily:"'Zen Kaku Gothic New',sans-serif",fontSize:24,fontWeight:900,color:goalCalc.deficit>0?"#166534":"#0369a1"}}>{goalCalc.deficit>0?"-":"+"}{Math.abs(goalCalc.deficit).toLocaleString()}</div><div style={{fontSize:11,color:goalCalc.deficit>0?"#166534":"#0369a1"}}>kcal/日</div></div></div><div style={{background:"#f9fafb",borderRadius:10,padding:"12px 14px",fontSize:12,color:"#6b7280",lineHeight:1.8,marginBottom:10}}>体重差: {Math.abs(parseFloat(cv.weight)-parseFloat(cv.goalWeight)).toFixed(1)}kg {parseFloat(cv.weight)>parseFloat(cv.goalWeight)?"減量":"増量"}<br/>必要な総カロリー差: {Math.abs(goalCalc.total).toLocaleString()} kcal{goalCalc.tooAggressive&&<><br/><span style={{color:"#f59e0b",fontWeight:700}}>⚠️ 1200kcal未満は健康リスクが高まる場合があります。医師・栄養士への相談をお勧めします。</span></>}</div><div style={{background:"#fffbeb",borderRadius:10,padding:"12px 14px",fontSize:13,color:"#78350f",lineHeight:1.8}}><span style={{fontWeight:700}}>推奨マクロ（{goalCalc.daily} kcal）</span><br/>タンパク質: {Math.round(parseFloat(cv.weight||60)*1.6)}g<br/>脂質: {Math.round(goalCalc.daily*0.25/9)}g<br/>糖質: {Math.round((goalCalc.daily-parseFloat(cv.weight||60)*1.6*4-goalCalc.daily*0.25)/4)}g</div></>)}</>)}</Card>)}
+        </div>)}
+
+        {step===2&&(<div className="fade"><Card style={{marginBottom:14}}>
+          <div style={{fontSize:11,fontWeight:700,color:"#43a047",marginBottom:4,letterSpacing:"1px",textTransform:"uppercase"}}>食事・栄養</div>
+          <div style={{fontSize:12,color:"#81c784",marginBottom:16}}>これから取り組みたいことを教えてください</div>
+          <OptSelect label="動物性タンパク（肉・魚・卵）をどう摂りたい？" value={lv.animal} options={[{v:"daily",l:"毎日しっかり摂る"},{v:"often",l:"週4〜5回は摂る"},{v:"rare",l:"なるべく少なくしたい"},{v:"none",l:"植物性のみにしたい"}]} onChange={v=>setL("animal",v)}/>
+          <OptSelect label="糖質とどう付き合いたい？" value={lv.diet} options={[{v:"normal",l:"制限しない・バランス重視"},{v:"moderate",l:"緩やかに減らしたい"},{v:"lowcarb",l:"かなり減らしたい"}]} onChange={v=>setL("diet",v)}/>
+          <OptSelect label="腸活（発酵食品・食物繊維）を取り入れたい？" value={lv.fermented} options={[{v:"daily",l:"毎日取り入れたい"},{v:"often",l:"週4〜5回は取り入れたい"},{v:"rarely",l:"少し取り入れたい"},{v:"never",l:"あまり変えたくない"}]} onChange={v=>setL("fermented",v)}/>
+          <OptSelect label="食事回数はどうしたい？" value={lv.mealFreq} options={[{v:"1",l:"1食に絞りたい"},{v:"2",l:"2食にしたい"},{v:"3",l:"3食しっかり食べたい"},{v:"4",l:"3食+補食で血糖を安定させたい"}]} onChange={v=>setL("mealFreq",v)}/>
+          <OptSelect label="食べ方で意識したいことは？" value={lv.chewing} options={[{v:"fast",l:"特になし"},{v:"medium",l:"少しゆっくり食べたい"},{v:"slow",l:"よく噛むことを意識したい"}]} onChange={v=>setL("chewing",v)}/>
+          <div>
+            <div style={{fontSize:13,fontWeight:700,color:"#2e7d32",marginBottom:6}}>現在すでに飲んでいるサプリ（重複提案を避けるために選択）</div>
+            <div style={{fontSize:11,color:"#81c784",marginBottom:10}}>飲んでいるものだけチェック。これから飲みたいものは不要です。</div>
+            <div style={{fontSize:12,fontWeight:600,color:"#43a047",marginBottom:6}}>脳・神経・認知</div>
+            <div style={{display:"flex",flexWrap:"wrap",gap:7,marginBottom:12}}>
+              {[{k:"suppGinkgo",l:"イチョウ葉"},{k:"suppTheanine",l:"テアニン"},{k:"suppTyrosine",l:"チロシン"},{k:"suppLecithin",l:"レシチン（PC）"},{k:"suppArginine",l:"アルギニン"},{k:"suppProtein",l:"プロテイン"}].map(t=>(
+                <ToggleChip key={t.k} active={lv[t.k]==="yes"} label={t.l} onClick={()=>setL(t.k,lv[t.k]==="yes"?"no":"yes")}/>
+              ))}
+            </div>
+            <div style={{fontSize:12,fontWeight:600,color:"#43a047",marginBottom:6}}>ミネラル・ビタミン</div>
+            <div style={{display:"flex",flexWrap:"wrap",gap:7,marginBottom:12}}>
+              {[{k:"suppIron",l:"鉄"},{k:"suppB",l:"ビタミンB群"},{k:"suppMg",l:"マグネシウム"},{k:"suppVitC",l:"ビタミンC"},{k:"suppVitD",l:"ビタミンD"},{k:"suppK2",l:"ビタミンK2"},{k:"suppZinc",l:"亜鉛"},{k:"suppSelen",l:"セレン"},{k:"suppCopper",l:"銅"}].map(t=>(
+                <ToggleChip key={t.k} active={lv[t.k]==="yes"} label={t.l} onClick={()=>setL(t.k,lv[t.k]==="yes"?"no":"yes")}/>
+              ))}
+            </div>
+            <div style={{fontSize:12,fontWeight:600,color:"#43a047",marginBottom:6}}>脂質・抗酸化 / アダプトゲン・運動</div>
+            <div style={{display:"flex",flexWrap:"wrap",gap:7}}>
+              {[{k:"suppOmega3",l:"オメガ3（EPA/DHA）"},{k:"suppCoQ10",l:"CoQ10"},{k:"suppAlpha",l:"αリポ酸"},{k:"suppAshwa",l:"アシュワガンダ"},{k:"suppCreatine",l:"クレアチン"},{k:"suppBCAA",l:"BCAA"},{k:"suppProb",l:"プロバイオティクス"},{k:"suppEnzyme",l:"消化酵素"}].map(t=>(
+                <ToggleChip key={t.k} active={lv[t.k]==="yes"} label={t.l} onClick={()=>setL(t.k,lv[t.k]==="yes"?"no":"yes")}/>
+              ))}
+            </div>
+          </div>
+        </Card></div>)}
+        {step===3&&(<div className="fade"><Card style={{marginBottom:14}}>
+          <div style={{fontSize:11,fontWeight:700,color:"#43a047",marginBottom:4,letterSpacing:"1px",textTransform:"uppercase"}}>生活習慣</div>
+          <div style={{fontSize:12,color:"#81c784",marginBottom:16}}>今困っていること・改善したいことを教えてください</div>
+          <OptSelect label="今のストレスレベルはどのくらい？" value={lv.stress} options={[{v:"1",l:"1 ほとんどない"},{v:"2",l:"2 少しある"},{v:"3",l:"3 中程度"},{v:"4",l:"4 かなり多い"},{v:"5",l:"5 非常に多い"}]} onChange={v=>setL("stress",v)}/>
+          <OptSelect label="睡眠で改善したいことは？" value={lv.sleep} options={[{v:"5",l:"まず時間を確保したい（5時間未満）"},{v:"6",l:"もう少し増やしたい（6時間前後）"},{v:"7",l:"質を上げたい（7時間前後）"},{v:"8",l:"今は十分に取れている（8時間以上）"}]} onChange={v=>setL("sleep",v)}/>
+          <OptSelect label="睡眠の質は？" value={lv.sleepQuality} options={[{v:"bad",l:"悪い・熟睡できない"},{v:"medium",l:"普通"},{v:"good",l:"よく眠れている"}]} onChange={v=>setL("sleepQuality",v)}/>
+          <OptSelect label="朝起きたとき疲れが残っていることが多い？" value={lv.morningFatigue} options={[{v:"yes",l:"よくある（改善したい）"},{v:"sometimes",l:"たまにある"},{v:"no",l:"ほとんどない"}]} onChange={v=>setL("morningFatigue",v)}/>
+          <OptSelect label="立ちくらみ・めまいがある？" value={lv.dizziness} options={[{v:"yes",l:"よくある（改善したい）"},{v:"sometimes",l:"たまにある"},{v:"no",l:"ほとんどない"}]} onChange={v=>setL("dizziness",v)}/>
+          <div>
+            <div style={{fontSize:13,fontWeight:700,color:"#2e7d32",marginBottom:10}}>特に解決したい悩みを選んでください（複数選択可）</div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:7}}>
+              {[{key:"migraine",label:"片頭痛を改善したい"},{key:"weather",label:"気象病・低気圧をなんとかしたい"},{key:"fatigue",label:"慢性疲労を改善したい"},{key:"digestion",label:"胃腸の調子を整えたい"},{key:"cold",label:"冷え性を改善したい"},{key:"mood",label:"気分の落ち込みを改善したい"}].map(s=>(
+                <ToggleChip key={s.key} active={lv.symptoms?.includes(s.key)} label={s.label} onClick={()=>tog(setLv,"symptoms",s.key)}/>
+              ))}
+            </div>
+          </div>
+        </Card></div>)}
+
+        {step===4&&(<div className="fade"><Card style={{marginBottom:14}}>
+          <div style={{fontSize:11,fontWeight:700,color:"#43a047",marginBottom:4,letterSpacing:"1px",textTransform:"uppercase"}}>運動習慣</div>
+          <div style={{fontSize:12,color:"#81c784",marginBottom:16}}>今後取り組みたい運動について教えてください</div>
+          <OptSelect label="これから週に何回くらい運動できそう？" value={ev.frequency} options={[{v:"0",l:"当面はできそうにない"},{v:"1",l:"週1回なら続けられる"},{v:"2",l:"週2〜3回を目標にしたい"},{v:"3",l:"週4回以上やりたい"}]} onChange={v=>setE("frequency",v)}/>
+          <div style={{marginBottom:18}}>
+            <div style={{fontSize:13,fontWeight:700,color:"#2e7d32",marginBottom:10}}>取り入れたい運動の種類（複数選択可）</div>
+            <div style={{display:"flex",flexWrap:"wrap",gap:7}}>
+              {[{key:"cardio",label:"有酸素運動（ウォーキング・ランニング）"},{key:"strength",label:"筋トレ"},{key:"stretch",label:"ストレッチ・ヨガ"},{key:"sports",label:"スポーツ・格技"}].map(t=>(
+                <ToggleChip key={t.key} active={ev.type?.includes(t.key)} label={t.label} onClick={()=>tog(setEv,"type",t.key)}/>
+              ))}
+            </div>
+          </div>
+          <OptSelect label="運動経験・体力レベルは？" value={ev.level} options={[{v:"beginner",l:"初心者・久しぶり"},{v:"intermediate",l:"中級（定期的に運動している）"},{v:"advanced",l:"上級（毎日・競技レベル）"}]} onChange={v=>setE("level",v)}/>
+          <OptSelect label="運動で一番達成したいことは？" value={ev.goal} options={[{v:"health",l:"健康維持・体力向上"},{v:"diet",l:"体脂肪を減らしたい"},{v:"muscle",l:"筋肉をつけたい"},{v:"performance",l:"競技パフォーマンスを上げたい"}]} onChange={v=>setE("goal",v)}/>
+          <OptSelect label="主な仕事・生活スタイルは？" value={ev.worktype} options={[{v:"desk",l:"デスクワーク中心"},{v:"standing",l:"立ち仕事"},{v:"active",l:"体を動かす仕事"},{v:"mixed",l:"混合"}]} onChange={v=>setE("worktype",v)}/>
+          <OptSelect label="少し動くと息切れしやすい？" value={ev.breathless} options={[{v:"no",l:"ほとんどない"},{v:"sometimes",l:"たまにある"},{v:"yes",l:"よくある（改善したい）"}]} onChange={v=>setE("breathless",v)}/>
+          <OptSelect label="運動後の体の回復はどのくらいかかる？" value={ev.recovery} options={[{v:"fast",l:"翌日には回復する"},{v:"normal",l:"1〜2日かかる"},{v:"slow",l:"3日以上かかる（改善したい）"}]} onChange={v=>setE("recovery",v)}/>
+          <div>
+            <div style={{fontSize:13,fontWeight:700,color:"#2e7d32",marginBottom:10}}>身体で気になること・改善したいこと（複数選択可）</div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:7}}>
+              {[{key:"backpain",label:"腰痛を改善したい"},{key:"shoulderpain",label:"肩こり・首の痛みを改善したい"},{key:"kneepain",label:"膝・股関節の痛みを改善したい"},{key:"balance",label:"バランス感覚を高めたい"},{key:"stiffness",label:"体の柔軟性を上げたい"},{key:"posture",label:"姿勢を改善したい"},{key:"weakcore",label:"体幹を鍛えたい"},{key:"coordination",label:"動きの質・協調性を高めたい"}].map(s=>(
+                <ToggleChip key={s.key} active={ev.issues?.includes(s.key)} label={s.label} onClick={()=>tog(setEv,"issues",s.key)}/>
+              ))}
+            </div>
+          </div>
+        </Card></div>)}
+
+        {step===5&&(<div className="fade"><Card style={{marginBottom:14}}>
+          <div style={{fontSize:11,fontWeight:700,color:"#43a047",marginBottom:4,letterSpacing:"1px",textTransform:"uppercase"}}>あなたについて</div>
+          <div style={{fontSize:12,color:"#81c784",marginBottom:16}}>より精度の高いプランのために教えてください</div>
+          <div style={{background:"#e8f5e9",borderRadius:10,padding:"10px 14px",marginBottom:16,fontSize:12,color:"#2e7d32"}}>性別・年齢はカロリー計算ステップで入力済みです</div>
+          <OptSelect label="妊娠・授乳中ですか？" value={pv.pregnant} options={[{v:"no",l:"いいえ"},{v:"yes",l:"妊娠中"},{v:"breastfeeding",l:"授乳中"}]} onChange={v=>setP("pregnant",v)}/>
+
+          {/* 女性のみ：生理の深掘り */}
+          {(cv.gender==="female")&&pv.pregnant!=="yes"&&pv.pregnant!=="breastfeeding"&&(<div style={{background:"#fdf2f8",border:"1px solid #f0abfc",borderRadius:14,padding:"16px",marginBottom:16}}>
+            <div style={{fontSize:13,fontWeight:700,color:"#86198f",marginBottom:14}}>[生理] 生理について教えてください</div>
+            <OptSelect label=" 生理周期の規則性" value={pv.cycleRegular} options={[{v:"regular",l:"規則的（±3日以内）"},{v:"irregular",l:"不規則（±1週間以上）"},{v:"noperiod",l:"来ていない"}]} onChange={v=>setP("cycleRegular",v)}/>
+            <OptSelect label=" 経血量（生理の重さ）" value={pv.flowHeavy} options={[{v:"light",l:"少ない（ナプキン交換少なめ）"},{v:"normal",l:"普通"},{v:"heavy",l:"多い（1〜2時間で交換）"},{v:"veryheavy",l:"非常に多い（漏れることも）"}]} onChange={v=>setP("flowHeavy",v)}/>
+            <OptSelect label=" 生理痛の強さ" value={pv.dysmenorrhea} options={[{v:"none",l:"ほぼない"},{v:"mild",l:"軽い（市販薬不要）"},{v:"moderate",l:"中程度（市販薬で対応）"},{v:"severe",l:"強い（日常生活に支障）"}]} onChange={v=>setP("dysmenorrhea",v)}/>
+            <OptSelect label=" PMS（生理前の不調）" value={pv.pms} options={[{v:"none",l:"ほぼない"},{v:"mild",l:"軽い（気になる程度）"},{v:"moderate",l:"中程度（気分・体調に影響）"},{v:"severe",l:"強い（日常生活に支障）"}]} onChange={v=>setP("pms",v)}/>
+            <div style={{marginBottom:18}}>
+              <div style={{fontSize:13,fontWeight:700,color:"#374151",marginBottom:10}}> 生理前後に出やすい症状（複数選択可）</div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:7}}>
+                {[{k:"pmsMood",l:"気分の落ち込み・イライラ",i:""},{k:"pmsFatigue",l:"疲労感・だるさ",i:"[睡眠]"},{k:"pmsCraving",l:"甘いもの・炭水化物への過食",i:""},{k:"pmsAppetite",l:"食欲の著しい変化",i:"️"},{k:"pmsHeadache",l:"頭痛・片頭痛",i:""},{k:"pmsBloat",l:"むくみ・腹部膨満感",i:""},{k:"pmsInsomnia",l:"睡眠の乱れ",i:""},{k:"pmsSkin",l:"肌荒れ・ニキビ",i:"✨"}].map(s=>(
+                  <ToggleChip key={s.k} active={pv.mensSym?.includes(s.k)} icon={s.i} label={s.l} onClick={()=>tog(setPv,"mensSym",s.k)}/>
+                ))}
+              </div>
+            </div>
+          </div>)}
+
+          <div><div style={{fontSize:13,fontWeight:700,color:"#374151",marginBottom:10}}> 過去または現在の病歴（複数選択可）</div><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:7}}>{[{k:"iron",l:"貧血・鉄欠乏"},{k:"thyroid",l:"甲状腺疾患"},{k:"diabetes",l:"血糖・糖尿病"},{k:"liver",l:"肝臓疾患"},{k:"digestive",l:"消化器疾患"},{k:"none",l:"特になし"}].map(h=>(<ToggleChip key={h.k} active={pv.history?.includes(h.k)} label={h.l} onClick={()=>tog(setPv,"history",h.k)}/>))}</div></div></Card></div>)}
+
+        {step===6&&res&&ss&&(<div className="fade" style={{paddingBottom:100}}>
+          <div style={{marginBottom:16}}>
+            <div style={{fontSize:11,fontWeight:700,color:"#81c784",marginBottom:8,letterSpacing:"0.5px",textTransform:"uppercase"}}>途中からやり直す</div>
+            <div style={{display:"flex",flexWrap:"wrap",gap:6}}>{[{label:"血液検査",s:0},{label:"カロリー",s:1},{label:"食事・栄養",s:2},{label:"生活習慣",s:3},{label:"運動習慣",s:4},{label:"あなたについて",s:5}].map(({label,s})=>(<button key={s} onClick={()=>goTo(s)} style={{padding:"6px 12px",borderRadius:20,border:"1.5px solid #c8e6c9",background:"white",color:"#2e7d32",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:"inherit"}}>{label}</button>))}</div>
+          </div>
+
+          {tdee&&(<Card style={{marginBottom:16,borderTop:"4px solid #43a047"}}><div style={{display:"flex",alignItems:"center",gap:10,marginBottom:12}}><div style={{width:40,height:40,borderRadius:12,background:"#e8f5e9",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20}}>▶</div><div><div style={{fontSize:11,fontWeight:700,color:"#43a047",textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:2}}>カロリー目標</div><div style={{fontSize:22,fontWeight:900,color:"#1b5e20"}}>TDEE {tdee.toLocaleString()} <span style={{fontSize:13,fontWeight:600}}>kcal/日</span></div></div></div><div style={{display:"flex",flexWrap:"wrap",gap:8}}><span style={{background:"#e8f5e9",border:"1px solid #a5d6a7",color:"#2e7d32",padding:"5px 12px",borderRadius:20,fontSize:12,fontWeight:700}}>BMI {bmi} ({bmiLabel})</span>{goalCalc&&<span style={{background:"#e8f5e9",border:"1px solid #a5d6a7",color:"#1b5e20",padding:"5px 12px",borderRadius:20,fontSize:12,fontWeight:700}}>目標 {goalCalc.daily.toLocaleString()} kcal</span>}{goalCalc&&<span style={{background:"#fff3e0",border:"1px solid #ffcc80",color:"#e65100",padding:"5px 12px",borderRadius:20,fontSize:12,fontWeight:700}}>{goalCalc.deficit>0?"-":"+"}{Math.abs(goalCalc.deficit)} kcal/日</span>}</div></Card>)}
+
+          <Card style={{marginBottom:16,borderTop:`4px solid ${ss.top}`}}><div style={{display:"flex",alignItems:"center",gap:12,marginBottom:12}}><div style={{width:48,height:48,borderRadius:14,background:ss.bg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:24,flexShrink:0}}>{ss.icon}</div><div style={{flex:1}}><div style={{fontSize:11,color:"#9ca3af",fontWeight:600,marginBottom:3,textTransform:"uppercase",letterSpacing:"0.5px"}}>総合判定</div><div style={{fontSize:20,fontWeight:900,color:"#1b5e20"}}>{res.overall}</div></div><span className="badge" style={{background:ss.bg,color:ss.top}}>{ss.label}</span></div><p style={{fontSize:13,color:"#37474f",lineHeight:1.8}}>{res.summary}</p></Card>
+
+          {res.warns?.length>0&&res.warns.map((w,i)=><div key={i} className="wb">⚠️ {w}</div>)}
+
+          {res.issues?.length>0?(<Sec icon="▷" label="血液検査：各項目の分析" color="#c8e6c9">{res.issues.map((item,i)=>{const is=IS[item.lv];return(<div key={i} style={{background:is.bg,borderRadius:14,padding:"13px 15px",marginBottom:8,border:`1px solid ${is.bd}`,boxShadow:"0 1px 4px rgba(0,0,0,0.04)"}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}><span style={{fontSize:13,fontWeight:700,color:is.bt}}>{item.item}</span><span style={{background:is.bd,color:is.bt,padding:"3px 10px",borderRadius:20,fontSize:12,fontWeight:700}}>{item.val}</span></div><p style={{fontSize:13,color:"#37474f",lineHeight:1.7,whiteSpace:"pre-line"}}>{item.note}</p></div>);})}</Sec>):(<div style={{background:"#e8f5e9",border:"1px solid #a5d6a7",borderRadius:14,padding:"16px",marginBottom:16,fontSize:13,color:"#2e7d32",textAlign:"center"}}><div style={{fontWeight:700,marginBottom:6}}>血液検査を入力するとより精度が上がります</div><button onClick={()=>{setStep(0);setRes(null);}} style={{padding:"8px 20px",borderRadius:20,border:"none",background:"#43a047",color:"white",fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>血液検査を入力する</button></div>)}
+
+          {res.trainerNotes?.length>0&&(<Sec icon="▷" label="トレーナー向けサマリー" color="#c8e6c9">
+            <div style={{background:"#e8f5e9",borderRadius:12,padding:"10px 14px",marginBottom:12,fontSize:12,color:"#2e7d32",fontWeight:600}}>
+              血液検査・身体状況・目標から導き出したプログラム設計の参考情報です
+            </div>
+            {res.trainerNotes.map((n,i)=>(
+              <div key={i} style={{background:"white",border:"1px solid #e8f5e9",borderLeft:"4px solid #43a047",borderRadius:"0 14px 14px 0",padding:"13px 15px",marginBottom:8,boxShadow:"0 1px 4px rgba(67,160,71,0.08)"}}>
+                <div style={{fontSize:11,fontWeight:700,color:"#43a047",marginBottom:5}}>{n.tag} {n.category}</div>
+                <p style={{fontSize:13,color:"#37474f",lineHeight:1.8,whiteSpace:"pre-line"}}>{n.note}</p>
+              </div>
+            ))}
+          </Sec>)}
+          {/* 統合プラン：食事・サプリ・生活習慣を集約 */}
+          {(()=>{
+            const plans=buildDietPlan(cv,bv,lv,ev,pv,res);
+            if(!plans||plans.length===0) return null;
+            const hasDietGoal=cv.goalWeight&&cv.weeks&&parseFloat(cv.weight)>parseFloat(cv.goalWeight);
+            return(
+              <Sec icon="▷" label={hasDietGoal?"月別プラン（食事・サプリ・生活習慣）":"あなたへの総合プラン（3ヶ月）"} color="#c8e6c9">
+                <div style={{background:"#e8f5e9",borderRadius:12,padding:"12px 14px",marginBottom:14,fontSize:12,color:"#1b5e20",lineHeight:1.7}}>
+                  {hasDietGoal
+                    ?"目標: "+cv.weight+"kg → "+cv.goalWeight+"kg / "+Math.ceil(parseInt(cv.weeks)/4)+"ヶ月計画"
+                    :"血液検査・症状・生活習慣をもとに3ヶ月の総合プランを作成しました"
+                  }
+                  {"　各月の「今月やること」に絞って記載しています。"}
+                </div>
+                {plans.map((plan,i)=>(
+                  <div key={i} style={{background:"white",border:"2px solid "+plan.phaseColor+"30",borderRadius:16,padding:"16px",marginBottom:14,boxShadow:"0 2px 8px rgba(0,0,0,0.05)"}}>
+                    {/* 月ヘッダー */}
+                    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12,paddingBottom:10,borderBottom:"1px solid #e8f5e9"}}>
+                      <div style={{display:"flex",alignItems:"center",gap:10}}>
+                        <div style={{width:36,height:36,borderRadius:10,background:plan.phaseColor,display:"flex",alignItems:"center",justifyContent:"center",color:"white",fontSize:15,fontWeight:900,flexShrink:0}}>{plan.month}</div>
+                        <div>
+                          <div style={{fontSize:10,color:plan.phaseColor,fontWeight:700,marginBottom:1}}>{plan.phase}</div>
+                          <div style={{fontSize:15,fontWeight:900,color:"#1b5e20"}}>{plan.month}ヶ月目</div>
+                        </div>
+                      </div>
+                      {plan.targetKcal&&(
+                        <div style={{textAlign:"right"}}>
+                          <div style={{fontSize:10,color:"#9ca3af"}}>目標摂取</div>
+                          <div style={{fontSize:18,fontWeight:900,color:plan.phaseColor}}>{plan.targetKcal.toLocaleString()}<span style={{fontSize:10,fontWeight:400,color:"#9ca3af"}}> kcal</span></div>
+                        </div>
+                      )}
+                    </div>
+                    {plan.warning&&<div style={{background:"#fff3cd",borderRadius:10,padding:"8px 12px",marginBottom:10,fontSize:12,color:"#856404",fontWeight:600}}>{plan.warning}</div>}
+                    {plan.personalAlerts&&plan.personalAlerts.length>0&&(
+                      <div style={{background:"#fce4ec",borderRadius:10,padding:"10px 12px",marginBottom:10}}>
+                        <div style={{fontSize:11,fontWeight:700,color:"#c62828",marginBottom:5}}>あなたへの注意点</div>
+                        {plan.personalAlerts.map((a,ai)=><div key={ai} style={{fontSize:12,color:"#b71c1c",lineHeight:1.7,padding:"2px 0"}}>{a}</div>)}
+                      </div>
+                    )}
+                    {/* 3セクション */}
+                    {[
+                      {label:"今月の食事",items:plan.diet,color:"#2e7d32",bg:"#f1f8e9",isSupp:false},
+                      {label:"今月のサプリ",items:plan.supps,color:"#1565c0",bg:"#e3f2fd",isSupp:true},
+                      {label:"今月の習慣",items:plan.life,color:"#6a1b9a",bg:"#f3e5f5",isSupp:false,isLife:false},
+                    ].map((s,j)=>(
+                      <div key={j} style={{background:s.bg,borderRadius:12,padding:"12px 14px",marginBottom:8}}>
+                        <div style={{fontSize:12,fontWeight:700,color:s.color,marginBottom:8}}>{s.label}</div>
+                        {s.items.map((item,k)=>{
+                          const isNew=s.isSupp&&item.startsWith("[今月");
+                          const isCont=s.isSupp&&item.startsWith("[継続]");
+                          const cleanItem=s.isSupp?item.replace(/^\[(今月から|今月追加|継続)\]\s*/,""):item;
+                          return(
+                            <div key={k} style={{display:"flex",gap:8,fontSize:12,color:"#37474f",lineHeight:1.7,padding:"4px 0",borderBottom:k<s.items.length-1?"1px solid rgba(0,0,0,0.06)":"none"}}>
+                              {s.isSupp?(
+                                <span style={{background:isCont?"#546e7a":"#1565c0",color:"white",borderRadius:4,padding:"1px 6px",fontSize:10,fontWeight:700,flexShrink:0,alignSelf:"flex-start",marginTop:3}}>
+                                  {isCont?"継続":"NEW"}
+                                </span>
+                              ):(
+                                <span style={{color:s.color,fontWeight:700,flexShrink:0}}>→</span>
+                              )}
+                              <span>{cleanItem}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </Sec>
+            );
+          })()}
+          <div style={{background:"#e8f5e9",border:"1px solid #a5d6a7",borderRadius:14,padding:"14px 16px",fontSize:12,color:"#388e3c",lineHeight:1.7}}>このアドバイスは参考情報です。医療診断の代わりにはなりません。症状が続く場合は医師・専門家にご相談ください。</div>
+        </div>)}
+        </div>
+      </div>
+
+      {/* 固定フッターナビゲーション */}
+      {step<6&&(
+        <div style={{position:"fixed",bottom:0,left:0,right:0,background:"white",borderTop:"1px solid #e8f5e9",padding:"12px 16px",zIndex:100,boxShadow:"0 -4px 16px rgba(0,0,0,0.08)"}}>
+          <div style={{maxWidth:480,margin:"0 auto",display:"flex",gap:10}}>
+            {step===0&&(<>
+              <button className="btn-s" style={{flex:1}} onClick={()=>goTo(1)}>スキップ</button>
+              <button className="btn-p" style={{flex:2}} onClick={()=>goTo(1)} disabled={filled===0}>{filled===0?"数値を入力してください":"次へ：カロリー計算 →"}</button>
+            </>)}
+            {step>0&&step<5&&(<>
+              <button className="btn-s" onClick={()=>goTo(step-1)}>← 戻る</button>
+              <button className="btn-p" style={{flex:1}} onClick={()=>goTo(step+1)}>次へ →</button>
+              {res&&<button onClick={finish} style={{padding:"15px 14px",borderRadius:14,border:"none",background:"linear-gradient(135deg,#43a047,#2e7d32)",color:"white",fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"inherit",whiteSpace:"nowrap",boxShadow:"0 4px 12px rgba(67,160,71,0.35)"}}>再生成</button>}
+            </>)}
+            {step===5&&(<>
+              <button className="btn-s" onClick={()=>goTo(step-1)}>← 戻る</button>
+              <button className="btn-p" style={{flex:1}} onClick={finish}>アドバイスを生成する</button>
+            </>)}
+          </div>
+        </div>
+      )}
+      {step===6&&res&&(
+        <div style={{position:"fixed",bottom:0,left:0,right:0,background:"white",borderTop:"1px solid #e8f5e9",padding:"12px 16px",zIndex:100,boxShadow:"0 -4px 16px rgba(0,0,0,0.08)"}}>
+          <div style={{maxWidth:480,margin:"0 auto",display:"flex",gap:10}}>
+            <button className="btn-s" onClick={reset}>← 最初から</button>
+            <button onClick={handlePrint} style={{flex:1,background:"linear-gradient(135deg,#43a047,#2e7d32)",color:"white",border:"none",borderRadius:14,padding:"15px",fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:"inherit",boxShadow:"0 4px 12px rgba(67,160,71,0.35)"}}>PDFで保存</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(React.createElement(App));
+</script>
+</body>
+</html>
